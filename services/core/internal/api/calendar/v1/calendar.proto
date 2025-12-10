@@ -1,0 +1,210 @@
+syntax = "proto3";
+
+package calendar.v1;
+
+option go_package = "your-module/api/calendar/v1;calendarpb";
+
+import "google/protobuf/timestamp.proto";
+
+// ==== Общие структуры ====
+
+// Временной интервал [start, end).
+message TimeRange {
+  google.protobuf.Timestamp start = 1;
+  google.protobuf.Timestamp end   = 2;
+}
+
+// Статус слота.
+enum SlotStatus {
+  SLOT_STATUS_UNSPECIFIED = 0;
+  SLOT_STATUS_FREE        = 1;
+  SLOT_STATUS_BOOKED      = 2;
+  SLOT_STATUS_CANCELLED   = 3;
+}
+
+// Статус бронирования.
+enum BookingStatus {
+  BOOKING_STATUS_UNSPECIFIED = 0;
+  BOOKING_STATUS_PENDING     = 1;
+  BOOKING_STATUS_CONFIRMED   = 2;
+  BOOKING_STATUS_CANCELLED   = 3;
+}
+
+// Тип повторения.
+enum RecurrenceFrequency {
+  RECURRENCE_FREQUENCY_UNSPECIFIED = 0;
+  RECURRENCE_FREQUENCY_DAILY       = 1;
+  RECURRENCE_FREQUENCY_WEEKLY      = 2;
+}
+
+// ==== Сущности домена ====
+
+// Представитель услуг (мастер, консультант и т.п.).
+message Provider {
+  string id           = 1;
+  string display_name = 2;
+  string description  = 3;
+}
+
+// Услуга (тип записи).
+message Service {
+  string id                  = 1;
+  string name                = 2;
+  string description         = 3;
+  int32  default_duration_min = 4; // может быть 0, если не задано
+  bool   is_active           = 5;
+}
+
+// Свободный/занятый слот расписания.
+message Slot {
+  string id          = 1;
+  string provider_id = 2;
+  string service_id  = 3;
+
+  google.protobuf.Timestamp starts_at = 4;
+  google.protobuf.Timestamp ends_at   = 5;
+
+  SlotStatus status = 6;
+}
+
+// Бронирование слота.
+message Booking {
+  string id         = 1;
+  string client_id  = 2;
+  string slot_id    = 3;
+  BookingStatus status = 4;
+
+  google.protobuf.Timestamp created_at    = 5;
+  google.protobuf.Timestamp cancelled_at  = 6;
+  string                     comment      = 7;
+}
+
+// Правило повторяющегося расписания (упрощённое).
+message ScheduleRule {
+  RecurrenceFrequency frequency    = 1;  // daily / weekly
+  int32               interval     = 2;  // шаг: каждые N дней/недель (>=1)
+  // Для weekly: дни недели в формате 1–7 (понедельник–воскресенье).
+  repeated int32      weekdays     = 3;
+
+  // Время начала слота внутри дня.
+  google.protobuf.Timestamp starts_at = 4;
+  int32                     duration_min = 5;
+
+  // Ограничения по окончанию.
+  google.protobuf.Timestamp until = 6;
+  int32                     count = 7;
+}
+
+// Расписание провайдера, заданное правилом повторения.
+message ProviderSchedule {
+  string id          = 1;
+  string provider_id = 2;
+  string time_zone   = 3;
+
+  // Даты действия расписания (могут быть опциональны).
+  google.protobuf.Timestamp start_date = 4;
+  google.protobuf.Timestamp end_date   = 5;
+
+  ScheduleRule rule = 6;
+}
+
+// ==== Запросы/ответы: слоты ====
+
+// Запрос свободных слотов в указанном интервале.
+message ListFreeSlotsRequest {
+  string provider_id = 1;
+  string service_id  = 2;
+
+  google.protobuf.Timestamp start = 3;
+  google.protobuf.Timestamp end   = 4;
+
+  int32 page      = 5; // номер страницы, начиная с 1
+  int32 page_size = 6; // размер страницы
+}
+
+message ListFreeSlotsResponse {
+  repeated Slot slots       = 1;
+  int32         total_count = 2;
+}
+
+// ==== Запросы/ответы: бронирование ====
+
+// Создание бронирования.
+message CreateBookingRequest {
+  string client_id = 1;
+  string slot_id   = 2;
+  string comment   = 3;
+}
+
+message CreateBookingResponse {
+  Booking booking = 1;
+}
+
+// Получение информации о бронировании.
+message GetBookingRequest {
+  string booking_id = 1;
+}
+
+message GetBookingResponse {
+  Booking booking = 1;
+}
+
+// Отмена бронирования.
+message CancelBookingRequest {
+  string booking_id = 1;
+  string reason     = 2;
+}
+
+message CancelBookingResponse {
+  Booking booking = 1;
+}
+
+// Список бронирований клиента за период.
+message ListBookingsRequest {
+  string client_id = 1;
+
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to   = 3;
+
+  int32 page      = 4;
+  int32 page_size = 5;
+}
+
+message ListBookingsResponse {
+  repeated Booking bookings    = 1;
+  int32           total_count  = 2;
+}
+
+// ==== Запросы/ответы: расписания провайдера ====
+
+// Получение расписаний провайдера.
+message ListProviderSchedulesRequest {
+  string provider_id = 1;
+}
+
+message ListProviderSchedulesResponse {
+  repeated ProviderSchedule schedules = 1;
+}
+
+// ==== Сервис календаря ====
+
+// Основной gRPC-сервис календарного ядра.
+service CalendarService {
+  // Получение свободных слотов в указанном интервале.
+  rpc ListFreeSlots (ListFreeSlotsRequest) returns (ListFreeSlotsResponse);
+
+  // Создание бронирования на свободный слот.
+  rpc CreateBooking (CreateBookingRequest) returns (CreateBookingResponse);
+
+  // Получение информации о бронировании.
+  rpc GetBooking (GetBookingRequest) returns (GetBookingResponse);
+
+  // Отмена ранее созданного бронирования.
+  rpc CancelBooking (CancelBookingRequest) returns (CancelBookingResponse);
+
+  // Список бронирований клиента за период.
+  rpc ListBookings (ListBookingsRequest) returns (ListBookingsResponse);
+
+  // Получение расписаний провайдера (повторяющиеся правила).
+  rpc ListProviderSchedules (ListProviderSchedulesRequest) returns (ListProviderSchedulesResponse);
+}

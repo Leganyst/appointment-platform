@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: appointment-postgres
+    environment:
+      POSTGRES_DB: core
+      POSTGRES_USER: core
+      POSTGRES_PASSWORD: core
+    volumes:
+      - pgdata-core:/var/lib/postgresql/data
+    networks:
+      - core-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U core -d core || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  core:
+    build:
+      context: ./services/core
+      dockerfile: Dockerfile
+    container_name: appointment-core
+    # Пробрасываем env, которые читает internal/config.LoadDBConfig()
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: core
+      DB_PASSWORD: core
+      DB_NAME: core
+      DB_SSLMODE: disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # gRPC-порт
+    ports:
+      - "50051:50051"
+    networks:
+      - core-net
+
+networks:
+  core-net:
+
+volumes:
+  pgdata-core:

@@ -2,23 +2,36 @@ package main
 
 import (
 	"log"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
+	"google.golang.org/grpc"
+
+	calendarpb "github.com/Leganyst/appointment-platform/internal/api/calendar/v1"
 	"github.com/Leganyst/appointment-platform/internal/config"
 	"github.com/Leganyst/appointment-platform/internal/db"
 	"github.com/Leganyst/appointment-platform/internal/model"
+	"github.com/Leganyst/appointment-platform/internal/repository"
+	"github.com/Leganyst/appointment-platform/internal/service"
+	"google.golang.org/grpc/reflection"
 )
 
 func main() {
+	// 1. Загружаем конфиг БД из env.
 	dbCfg, err := config.LoadDBConfig()
 	if err != nil {
 		log.Fatalf("load db config: %v", err)
 	}
 
+	// 2. Подключаемся к БД через GORM.
 	gormDB, err := db.NewGormDB(dbCfg)
 	if err != nil {
 		log.Fatalf("init db: %v", err)
 	}
 
+	// 3. Миграции моделей.
 	if err := model.AutoMigrate(gormDB); err != nil {
 		log.Fatalf("auto migrate: %v", err)
 	}
@@ -29,5 +42,38 @@ func main() {
 	}
 	defer sqlDB.Close()
 
-	// дальше — инициализация сервисов ядра календаря, gRPC/HTTP и т.п.
+	// 4. Репозитории (реализации на GORM).
+	slotRepo := repository.NewGormSlotRepository(gormDB)
+	bookingRepo := repository.NewGormBookingRepository(gormDB)
+
+	// 5. gRPC-сервис календаря.
+	calendarSvc := service.NewCalendarService(slotRepo, bookingRepo)
+
+	// 6. Настраиваем gRPC-сервер.
+	grpcServer := grpc.NewServer()
+	calendarpb.RegisterCalendarServiceServer(grpcServer, calendarSvc)
+	reflection.Register(grpcServer)
+
+	addr := ":50051" // можно вынести в env, например CORE_GRPC_ADDR
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("listen %s: %v", addr, err)
+	}
+
+	log.Printf("core gRPC server listening on %s", addr)
+
+	// 7. Запускаем сервер в горутине.
+	go func() {
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("grpc serve: %v", err)
+		}
+	}()
+
+	// 8. Грейсфул-шатдаун по сигналу.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	log.Println("shutting down gRPC server...")
+	grpcServer.GracefulStop()
 }

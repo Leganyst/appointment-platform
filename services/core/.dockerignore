@@ -1,0 +1,22 @@
+# VCS
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Go
+bin/
+tmp/
+*.out
+coverage.*
+*.test
+
+# Docker
+Dockerfile*
+
+# Артефакты / прочий мусор
+**/*.log

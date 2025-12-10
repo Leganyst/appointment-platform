@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package calendar.v1;
 
-option go_package = "your-module/api/calendar/v1;calendarpb";
+option go_package = "github.com/Leganyst/appointment-platform/services/core/internal/api/calendar/v1;calendarpb";
 
 import "google/protobuf/timestamp.proto";
 

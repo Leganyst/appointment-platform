@@ -40,7 +40,7 @@ func (r *GormBookingRepository) Create(ctx context.Context, booking *model.Booki
 
 func (r *GormBookingRepository) GetByID(ctx context.Context, id string) (*model.Booking, error) {
 	var b model.Booking
-	if err := r.db.WithContext(ctx).First(&b, "id = ?", id).Error; err != nil {
+	if err := r.db.WithContext(ctx).Preload("Slot").First(&b, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &b, nil
@@ -79,7 +79,8 @@ func (r *GormBookingRepository) ListByClientAndRange(
 	q := r.db.WithContext(ctx).
 		Model(&model.Booking{}).
 		Where("client_id = ?", clientID).
-		Where("created_at >= ? AND created_at <= ?", from, to)
+		Where("created_at >= ? AND created_at <= ?", from, to).
+		Preload("Slot")
 
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err

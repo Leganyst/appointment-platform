@@ -68,11 +68,15 @@ message Booking {
   string id        = 1;
   string client_id = 2;
   string slot_id   = 3;
-  BookingStatus status = 4;
+  string provider_id = 4;
+  string provider_name = 5;
+  string service_id = 6;
+  string service_name = 7;
+  BookingStatus status = 8;
 
-  google.protobuf.Timestamp created_at   = 5;
-  google.protobuf.Timestamp cancelled_at = 6;
-  string                     comment     = 7;
+  google.protobuf.Timestamp created_at   = 9;
+  google.protobuf.Timestamp cancelled_at = 10;
+  string                     comment     = 11;
 }
 
 // Правило повторяющегося расписания (упрощённое).

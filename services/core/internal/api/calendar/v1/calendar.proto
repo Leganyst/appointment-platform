@@ -85,6 +85,62 @@ message ListProviderSchedulesResponse {
   repeated common.v1.ProviderSchedule schedules = 1;
 }
 
+// Создание расписания провайдера (правило повторения).
+message CreateProviderScheduleRequest {
+  string provider_id = 1;
+  common.v1.ProviderSchedule schedule = 2; // rule, timezone, dates
+}
+
+message CreateProviderScheduleResponse {
+  common.v1.ProviderSchedule schedule = 1;
+}
+
+// Обновление расписания.
+message UpdateProviderScheduleRequest {
+  string schedule_id = 1;
+  common.v1.ProviderSchedule schedule = 2; // новые значения
+}
+
+message UpdateProviderScheduleResponse {
+  common.v1.ProviderSchedule schedule = 1;
+}
+
+// Удаление расписания.
+message DeleteProviderScheduleRequest {
+  string schedule_id = 1;
+}
+
+message DeleteProviderScheduleResponse {}
+
+// ==== Запросы/ответы: CRUD слотов ====
+
+message CreateSlotRequest {
+  string provider_id = 1;
+  string service_id = 2;
+  common.v1.TimeRange range = 3;
+}
+
+message CreateSlotResponse {
+  common.v1.Slot slot = 1;
+}
+
+message UpdateSlotRequest {
+  string slot_id = 1;
+  string service_id = 2;
+  common.v1.TimeRange range = 3;
+  common.v1.SlotStatus status = 4;
+}
+
+message UpdateSlotResponse {
+  common.v1.Slot slot = 1;
+}
+
+message DeleteSlotRequest {
+  string slot_id = 1;
+}
+
+message DeleteSlotResponse {}
+
 // ==== Сервис календаря ====
 
 // Основной gRPC-сервис календарного ядра.
@@ -106,4 +162,14 @@ service CalendarService {
 
   // Получение расписаний провайдера (повторяющиеся правила).
   rpc ListProviderSchedules (ListProviderSchedulesRequest) returns (ListProviderSchedulesResponse);
+
+  // CRUD расписаний провайдера.
+  rpc CreateProviderSchedule (CreateProviderScheduleRequest) returns (CreateProviderScheduleResponse);
+  rpc UpdateProviderSchedule (UpdateProviderScheduleRequest) returns (UpdateProviderScheduleResponse);
+  rpc DeleteProviderSchedule (DeleteProviderScheduleRequest) returns (DeleteProviderScheduleResponse);
+
+  // CRUD слотов.
+  rpc CreateSlot (CreateSlotRequest) returns (CreateSlotResponse);
+  rpc UpdateSlot (UpdateSlotRequest) returns (UpdateSlotResponse);
+  rpc DeleteSlot (DeleteSlotRequest) returns (DeleteSlotResponse);
 }

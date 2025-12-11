@@ -16,6 +16,12 @@ type SlotRepository interface {
 	GetByID(ctx context.Context, id string) (*model.TimeSlot, error)
 	// Обновить статус слота.
 	UpdateStatus(ctx context.Context, id string, status model.TimeSlotStatus) error
+	// Создать слот.
+	Create(ctx context.Context, slot *model.TimeSlot) error
+	// Обновить слот.
+	Update(ctx context.Context, slot *model.TimeSlot) error
+	// Удалить слот.
+	Delete(ctx context.Context, id string) error
 }
 
 type GormSlotRepository struct {
@@ -73,4 +79,16 @@ func (r *GormSlotRepository) UpdateStatus(ctx context.Context, id string, status
 		Where("id = ?", id).
 		Update("status", status).
 		Error
+}
+
+func (r *GormSlotRepository) Create(ctx context.Context, slot *model.TimeSlot) error {
+	return r.db.WithContext(ctx).Create(slot).Error
+}
+
+func (r *GormSlotRepository) Update(ctx context.Context, slot *model.TimeSlot) error {
+	return r.db.WithContext(ctx).Model(&model.TimeSlot{}).Where("id = ?", slot.ID).Updates(slot).Error
+}
+
+func (r *GormSlotRepository) Delete(ctx context.Context, id string) error {
+	return r.db.WithContext(ctx).Delete(&model.TimeSlot{}, "id = ?", id).Error
 }

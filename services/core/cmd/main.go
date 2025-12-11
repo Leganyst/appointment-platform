@@ -48,9 +48,11 @@ func main() {
 	bookingRepo := repository.NewGormBookingRepository(gormDB)
 	scheduleRepo := repository.NewGormScheduleRepository(gormDB)
 	userRepo := repository.NewGormUserRepository(gormDB)
+	providerRepo := repository.NewGormProviderRepository(gormDB)
+	serviceRepo := repository.NewGormServiceRepository(gormDB)
 
 	// 5. gRPC-сервис календаря.
-	calendarSvc := service.NewCalendarService(slotRepo, bookingRepo, scheduleRepo)
+	calendarSvc := service.NewCalendarService(gormDB, slotRepo, bookingRepo, scheduleRepo, providerRepo, serviceRepo, userRepo)
 	identitySvc := service.NewIdentityService(userRepo)
 
 	// 6. Настраиваем gRPC-сервер.

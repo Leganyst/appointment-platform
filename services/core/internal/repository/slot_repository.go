@@ -14,6 +14,8 @@ type SlotRepository interface {
 	ListFreeSlots(ctx context.Context, providerID, serviceID string, from, to time.Time, limit, offset int) ([]model.TimeSlot, int64, error)
 	// Найти слот по ID.
 	GetByID(ctx context.Context, id string) (*model.TimeSlot, error)
+	// Обновить статус слота.
+	UpdateStatus(ctx context.Context, id string, status model.TimeSlotStatus) error
 }
 
 type GormSlotRepository struct {
@@ -63,4 +65,12 @@ func (r *GormSlotRepository) GetByID(ctx context.Context, id string) (*model.Tim
 		return nil, err
 	}
 	return &slot, nil
+}
+
+func (r *GormSlotRepository) UpdateStatus(ctx context.Context, id string, status model.TimeSlotStatus) error {
+	return r.db.WithContext(ctx).
+		Model(&model.TimeSlot{}).
+		Where("id = ?", id).
+		Update("status", status).
+		Error
 }

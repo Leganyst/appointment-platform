@@ -8,14 +8,15 @@ import (
 	"syscall"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 
 	calendarpb "github.com/Leganyst/appointment-platform/internal/api/calendar/v1"
+	identitypb "github.com/Leganyst/appointment-platform/internal/api/identity/v1"
 	"github.com/Leganyst/appointment-platform/internal/config"
 	"github.com/Leganyst/appointment-platform/internal/db"
 	"github.com/Leganyst/appointment-platform/internal/model"
 	"github.com/Leganyst/appointment-platform/internal/repository"
 	"github.com/Leganyst/appointment-platform/internal/service"
-	"google.golang.org/grpc/reflection"
 )
 
 func main() {
@@ -45,13 +46,17 @@ func main() {
 	// 4. Репозитории (реализации на GORM).
 	slotRepo := repository.NewGormSlotRepository(gormDB)
 	bookingRepo := repository.NewGormBookingRepository(gormDB)
+	scheduleRepo := repository.NewGormScheduleRepository(gormDB)
+	userRepo := repository.NewGormUserRepository(gormDB)
 
 	// 5. gRPC-сервис календаря.
-	calendarSvc := service.NewCalendarService(slotRepo, bookingRepo)
+	calendarSvc := service.NewCalendarService(slotRepo, bookingRepo, scheduleRepo)
+	identitySvc := service.NewIdentityService(userRepo)
 
 	// 6. Настраиваем gRPC-сервер.
 	grpcServer := grpc.NewServer()
 	calendarpb.RegisterCalendarServiceServer(grpcServer, calendarSvc)
+	identitypb.RegisterIdentityServiceServer(grpcServer, identitySvc)
 	reflection.Register(grpcServer)
 
 	addr := ":50051" // можно вынести в env, например CORE_GRPC_ADDR

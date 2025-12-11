@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package identity.v1;
+
+option go_package = "github.com/Leganyst/appointment-platform/internal/api/identity/v1;identitypb";
+
+// Базовая информация о пользователе Telegram в системе.
+message User {
+  string id = 1;             // внутренний UUID
+  int64 telegram_id = 2;     // Telegram ID (не меняется)
+  string display_name = 3;   // имя / отображаемое имя из TG
+  string username = 4;       // @username, если есть
+  string contact_phone = 5;  // телефон, если предоставлен
+  string role_code = 6;      // текущая роль (client/provider/admin/…)
+}
+
+// Регистрация или возврат уже существующего пользователя по Telegram ID.
+message RegisterUserRequest {
+  int64 telegram_id = 1;
+  string display_name = 2;
+  string username = 3;
+  string contact_phone = 4;
+}
+
+message RegisterUserResponse {
+  User user = 1;
+}
+
+// Обновление контактных данных и отображаемого имени.
+message UpdateContactsRequest {
+  int64 telegram_id = 1;
+  string display_name = 2;
+  string username = 3;
+  string contact_phone = 4;
+}
+
+message UpdateContactsResponse {
+  User user = 1;
+}
+
+// Назначение роли пользователю.
+message SetRoleRequest {
+  int64 telegram_id = 1;
+  string role_code = 2; // например: client | provider | admin
+}
+
+message SetRoleResponse {
+  User user = 1;
+}
+
+// Получение профиля по Telegram ID.
+message GetProfileRequest {
+  int64 telegram_id = 1;
+}
+
+message GetProfileResponse {
+  User user = 1;
+}
+
+service IdentityService {
+  rpc RegisterUser(RegisterUserRequest) returns (RegisterUserResponse);
+  rpc UpdateContacts(UpdateContactsRequest) returns (UpdateContactsResponse);
+  rpc SetRole(SetRoleRequest) returns (SetRoleResponse);
+  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+}

@@ -264,6 +264,43 @@ func TestExpandRecurringRule_InvalidDuration(t *testing.T) {
 	}
 }
 
+func TestExpandRecurringRule_WeeklyWithWeekdays(t *testing.T) {
+	// Тест для weekly повторения с фильтрацией по дням недели
+	// Начинаем с понедельника 6 января 2025
+	start := mustTime(t, 2025, 1, 6, 10, 0) // Понедельник
+	window := TimeRange{
+		Start: mustTime(t, 2025, 1, 1, 0, 0),
+		End:   mustTime(t, 2025, 2, 1, 0, 0),
+	}
+	count := 4
+
+	rule := RecurringRule{
+		Freq:      FreqWeekly,
+		Interval:  1,
+		StartTime: start,
+		Duration:  time.Hour,
+		Weekdays:  []time.Weekday{time.Monday, time.Wednesday}, // Только понедельник и среда
+		Count:     &count,
+	}
+
+	events, err := ExpandRecurringRule(rule, window)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events, got %d", len(events))
+	}
+
+	// Проверяем, что все события попадают на понедельник или среду
+	for i, ev := range events {
+		weekday := ev.Start.Weekday()
+		if weekday != time.Monday && weekday != time.Wednesday {
+			t.Fatalf("event %d: expected Monday or Wednesday, got %v", i, weekday)
+		}
+	}
+}
+
 //
 // 3.5. Тесты для FormatSlotForUser
 //

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -11,6 +12,7 @@ import (
 
 type UserRepository interface {
 	FindByTelegramID(ctx context.Context, telegramID int64) (*model.User, error)
+	FindByPhone(ctx context.Context, phone string) (*model.User, error)
 	UpsertUser(ctx context.Context, telegramID int64, displayName, username, contactPhone string) (*model.User, error)
 	UpdateContacts(ctx context.Context, telegramID int64, displayName, username, contactPhone string) (*model.User, error)
 	SetRole(ctx context.Context, userID uuid.UUID, roleCode string) error
@@ -33,7 +35,43 @@ func (r *GormUserRepository) FindByTelegramID(ctx context.Context, telegramID in
 	return &u, nil
 }
 
+func normalizePhone(phone string) string {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return ""
+	}
+	// Keep only digits; ignore formatting characters.
+	b := make([]byte, 0, len(phone))
+	for i := 0; i < len(phone); i++ {
+		c := phone[i]
+		if c >= '0' && c <= '9' {
+			b = append(b, c)
+		}
+	}
+	return string(b)
+}
+
+func (r *GormUserRepository) FindByPhone(ctx context.Context, phone string) (*model.User, error) {
+	n := normalizePhone(phone)
+	if n == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	var u model.User
+	// Try normalized first, then raw (in case old data is not normalized).
+	q := r.db.WithContext(ctx).Model(&model.User{}).
+		Where("contact_phone = ?", n)
+	if strings.TrimSpace(phone) != n {
+		q = q.Or("contact_phone = ?", strings.TrimSpace(phone))
+	}
+	if err := q.First(&u).Error; err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 func (r *GormUserRepository) UpsertUser(ctx context.Context, telegramID int64, displayName, username, contactPhone string) (*model.User, error) {
+	contactPhone = normalizePhone(contactPhone)
 	var u model.User
 	tx := r.db.WithContext(ctx).Where("telegram_id = ?", telegramID).First(&u)
 	if tx.Error != nil {
@@ -71,7 +109,7 @@ func (r *GormUserRepository) UpdateContacts(ctx context.Context, telegramID int6
 		updates["display_name"] = displayName
 	}
 	if contactPhone != "" {
-		updates["contact_phone"] = contactPhone
+		updates["contact_phone"] = normalizePhone(contactPhone)
 	}
 	if username != "" {
 		updates["note"] = username

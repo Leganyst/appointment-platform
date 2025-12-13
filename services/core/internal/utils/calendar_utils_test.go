@@ -264,39 +264,79 @@ func TestExpandRecurringRule_InvalidDuration(t *testing.T) {
 	}
 }
 
-func TestExpandRecurringRule_WeeklyWithWeekdays(t *testing.T) {
-	// Тест для weekly повторения с фильтрацией по дням недели
-	// Начинаем с понедельника 6 января 2025
-	start := mustTime(t, 2025, 1, 6, 10, 0) // Понедельник
+func TestExpandRecurringRule_WeeklyMultipleWeekdays(t *testing.T) {
+	loc := time.UTC
+	// Якорь: Пн 2025-01-06 10:00 UTC.
+	start := time.Date(2025, 1, 6, 10, 0, 0, 0, loc)
 	window := TimeRange{
-		Start: mustTime(t, 2025, 1, 1, 0, 0),
-		End:   mustTime(t, 2025, 2, 1, 0, 0),
+		Start: time.Date(2025, 1, 6, 0, 0, 0, 0, loc),
+		End:   time.Date(2025, 1, 20, 0, 0, 0, 0, loc),
 	}
-	count := 4
 
 	rule := RecurringRule{
 		Freq:      FreqWeekly,
 		Interval:  1,
+		Weekdays:  []time.Weekday{time.Monday, time.Wednesday},
 		StartTime: start,
-		Duration:  time.Hour,
-		Weekdays:  []time.Weekday{time.Monday, time.Wednesday}, // Только понедельник и среда
-		Count:     &count,
+		Duration:  30 * time.Minute,
 	}
 
-	events, err := ExpandRecurringRule(rule, window)
+	got, err := ExpandRecurringRule(rule, window)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(events) != 4 {
-		t.Fatalf("expected 4 events, got %d", len(events))
+	// Ожидаем: Пн/Ср на неделях 2025-01-06 и 2025-01-13.
+	expected := []TimeRange{
+		{Start: time.Date(2025, 1, 6, 10, 0, 0, 0, loc), End: time.Date(2025, 1, 6, 10, 30, 0, 0, loc)},
+		{Start: time.Date(2025, 1, 8, 10, 0, 0, 0, loc), End: time.Date(2025, 1, 8, 10, 30, 0, 0, loc)},
+		{Start: time.Date(2025, 1, 13, 10, 0, 0, 0, loc), End: time.Date(2025, 1, 13, 10, 30, 0, 0, loc)},
+		{Start: time.Date(2025, 1, 15, 10, 0, 0, 0, loc), End: time.Date(2025, 1, 15, 10, 30, 0, 0, loc)},
 	}
 
-	// Проверяем, что все события попадают на понедельник или среду
-	for i, ev := range events {
-		weekday := ev.Start.Weekday()
-		if weekday != time.Monday && weekday != time.Wednesday {
-			t.Fatalf("event %d: expected Monday or Wednesday, got %v", i, weekday)
+	if !equalTimeRangeSlices(got, expected) {
+		t.Fatalf("expected %+v, got %+v", expected, got)
+	}
+}
+
+func TestExpandRecurringRule_Exceptions(t *testing.T) {
+	loc := time.UTC
+	start := time.Date(2025, 1, 1, 10, 0, 0, 0, loc)
+	window := TimeRange{
+		Start: time.Date(2025, 1, 1, 0, 0, 0, 0, loc),
+		End:   time.Date(2025, 1, 5, 0, 0, 0, 0, loc),
+	}
+
+	ex := map[time.Time]struct{}{
+		time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC): {},
+	}
+
+	rule := RecurringRule{
+		Freq:       FreqDaily,
+		Interval:   1,
+		StartTime:  start,
+		Duration:   time.Hour,
+		Exceptions: ex,
+	}
+
+	got, err := ExpandRecurringRule(rule, window)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedStarts := []time.Time{
+		time.Date(2025, 1, 1, 10, 0, 0, 0, loc),
+		// 2025-01-02 исключён
+		time.Date(2025, 1, 3, 10, 0, 0, 0, loc),
+		time.Date(2025, 1, 4, 10, 0, 0, 0, loc),
+	}
+
+	if len(got) != len(expectedStarts) {
+		t.Fatalf("expected %d events, got %d", len(expectedStarts), len(got))
+	}
+	for i := range expectedStarts {
+		if !got[i].Start.Equal(expectedStarts[i]) {
+			t.Fatalf("event %d: expected start %v, got %v", i, expectedStarts[i], got[i].Start)
 		}
 	}
 }

@@ -81,15 +81,19 @@ message Booking {
 
 // Правило повторяющегося расписания (упрощённое).
 message ScheduleRule {
-  RecurrenceFrequency frequency    = 1;  // daily / weekly
-  int32               interval     = 2;  // шаг: каждые N дней/недель (>=1)
-  repeated int32      weekdays     = 3;  // для weekly: дни недели 1–7
+  RecurrenceFrequency frequency    = 1; // daily / weekly
+  int32               interval     = 2; // шаг: каждые N дней/недель (>=1)
+  repeated int32      weekdays     = 3; // для weekly: дни недели 1–7
 
   google.protobuf.Timestamp starts_at    = 4; // время начала слота в дне
   int32                     duration_min = 5;
 
   google.protobuf.Timestamp until = 6;
   int32                     count = 7;
+
+  // Список дат-исключений (используется только дата, время игнорируется).
+  // Если дата присутствует в списке, повторение на эту дату не создаётся.
+  repeated google.protobuf.Timestamp exceptions = 8;
 }
 
 // Расписание провайдера, заданное правилом повторения.

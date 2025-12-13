@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +19,7 @@ import (
 	commonpb "github.com/Leganyst/appointment-platform/internal/api/common/v1"
 	"github.com/Leganyst/appointment-platform/internal/model"
 	"github.com/Leganyst/appointment-platform/internal/repository"
+	calendarutils "github.com/Leganyst/appointment-platform/internal/utils"
 )
 
 type CalendarService struct {
@@ -76,6 +79,31 @@ func (s *CalendarService) ListFreeSlots(
 	}
 	offset := (int(page) - 1) * int(size)
 
+	// Генерируем (материализуем) слоты из расписаний провайдера в окне,
+	// чтобы далее отдавать их через существующий репозиторий с пагинацией.
+	if s.db != nil && s.scheduleRepo != nil {
+		providerUUID, err := uuid.Parse(req.GetProviderId())
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, "invalid provider_id")
+		}
+		var serviceUUID *uuid.UUID
+		if req.GetServiceId() != "" {
+			sid, err := uuid.Parse(req.GetServiceId())
+			if err != nil {
+				return nil, status.Error(codes.InvalidArgument, "invalid service_id")
+			}
+			serviceUUID = &sid
+		}
+
+		schedules, err := s.scheduleRepo.ListByProvider(ctx, req.GetProviderId())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "list schedules: %v", err)
+		}
+		if err := s.materializeSlotsFromSchedules(ctx, providerUUID, serviceUUID, from.UTC(), to.UTC(), schedules); err != nil {
+			return nil, status.Errorf(codes.Internal, "materialize schedule slots: %v", err)
+		}
+	}
+
 	slots, total, err := s.slotRepo.ListFreeSlots(
 		ctx,
 		req.GetProviderId(),
@@ -108,6 +136,245 @@ func (s *CalendarService) ListFreeSlots(
 	return resp, nil
 }
 
+type slotKey struct {
+	ServiceID string
+	StartNS   int64
+	EndNS     int64
+}
+
+func makeSlotKey(serviceID *uuid.UUID, start, end time.Time) slotKey {
+	s := ""
+	if serviceID != nil {
+		s = serviceID.String()
+	}
+	return slotKey{ServiceID: s, StartNS: start.UnixNano(), EndNS: end.UnixNano()}
+}
+
+func (s *CalendarService) materializeSlotsFromSchedules(
+	ctx context.Context,
+	providerID uuid.UUID,
+	serviceID *uuid.UUID,
+	fromUTC, toUTC time.Time,
+	schedules []model.Schedule,
+) error {
+	if len(schedules) == 0 {
+		return nil
+	}
+	if !toUTC.After(fromUTC) {
+		return nil
+	}
+
+	// Expand all schedules to occurrences inside the window.
+	occBySchedule := make(map[uuid.UUID][]calendarutils.TimeRange, len(schedules))
+	for i := range schedules {
+		sched := schedules[i]
+		occ, err := s.expandScheduleModelInWindowUTC(&sched, fromUTC, toUTC)
+		if err != nil {
+			return fmt.Errorf("expand schedule %s: %w", sched.ID.String(), err)
+		}
+		if len(occ) == 0 {
+			continue
+		}
+		occBySchedule[sched.ID] = occ
+	}
+	if len(occBySchedule) == 0 {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Fetch existing slots in window once.
+		var existing []model.TimeSlot
+		q := tx.Model(&model.TimeSlot{}).
+			Where("provider_id = ?", providerID).
+			Where("starts_at >= ? AND ends_at <= ?", fromUTC, toUTC)
+		if serviceID != nil {
+			q = q.Where("service_id = ?", *serviceID)
+		} else {
+			q = q.Where("service_id IS NULL")
+		}
+		if err := q.Find(&existing).Error; err != nil {
+			return err
+		}
+
+		existingByKey := make(map[slotKey]model.TimeSlot, len(existing))
+		for _, sl := range existing {
+			sid := sl.ServiceID
+			k := makeSlotKey(sid, sl.StartsAt.UTC(), sl.EndsAt.UTC())
+			existingByKey[k] = sl
+		}
+
+		var toCreate []model.TimeSlot
+		for schedID, occurrences := range occBySchedule {
+			sid := schedID
+			for _, occ := range occurrences {
+				start := occ.Start.UTC()
+				end := occ.End.UTC()
+				k := makeSlotKey(serviceID, start, end)
+				if _, ok := existingByKey[k]; ok {
+					continue
+				}
+				toCreate = append(toCreate, model.TimeSlot{
+					ScheduleID: &sid,
+					ProviderID: providerID,
+					ServiceID:  serviceID,
+					StartsAt:   start,
+					EndsAt:     end,
+					Status:     model.TimeSlotStatusPlanned,
+				})
+			}
+		}
+
+		if len(toCreate) == 0 {
+			return nil
+		}
+
+		// Make deterministic insert order to reduce chances of diff on retries.
+		sort.Slice(toCreate, func(i, j int) bool {
+			if toCreate[i].StartsAt.Equal(toCreate[j].StartsAt) {
+				return toCreate[i].EndsAt.Before(toCreate[j].EndsAt)
+			}
+			return toCreate[i].StartsAt.Before(toCreate[j].StartsAt)
+		})
+
+		return tx.Create(&toCreate).Error
+	})
+}
+
+func (s *CalendarService) expandScheduleModelInWindowUTC(sched *model.Schedule, fromUTC, toUTC time.Time) ([]calendarutils.TimeRange, error) {
+	if sched == nil {
+		return []calendarutils.TimeRange{}, nil
+	}
+	rulePB := decodeScheduleRule(sched.Rules)
+	if rulePB == nil {
+		return []calendarutils.TimeRange{}, nil
+	}
+
+	loc := time.UTC
+	if sched.TimeZone != "" {
+		if l, err := time.LoadLocation(sched.TimeZone); err == nil {
+			loc = l
+		}
+	}
+
+	window := calendarutils.TimeRange{Start: fromUTC.In(loc), End: toUTC.In(loc)}
+	if !window.End.After(window.Start) {
+		return []calendarutils.TimeRange{}, nil
+	}
+
+	// Respect schedule date bounds (start_date/end_date).
+	if sched.StartDate != nil {
+		sd := time.Time(*sched.StartDate).In(loc)
+		sd = time.Date(sd.Year(), sd.Month(), sd.Day(), 0, 0, 0, 0, loc)
+		if window.Start.Before(sd) {
+			window.Start = sd
+		}
+	}
+	if sched.EndDate != nil {
+		ed := time.Time(*sched.EndDate).In(loc)
+		ed = time.Date(ed.Year(), ed.Month(), ed.Day(), 23, 59, 59, 0, loc)
+		if window.End.After(ed) {
+			window.End = ed
+		}
+	}
+	if !window.End.After(window.Start) {
+		return []calendarutils.TimeRange{}, nil
+	}
+
+	startsAt := rulePB.GetStartsAt()
+	if startsAt == nil {
+		return nil, fmt.Errorf("rule.starts_at is required")
+	}
+	st := startsAt.AsTime().In(loc)
+	// Базовая дата старта: start_date расписания или начало окна.
+	baseDate := window.Start
+	if sched.StartDate != nil {
+		bd := time.Time(*sched.StartDate).In(loc)
+		baseDate = time.Date(bd.Year(), bd.Month(), bd.Day(), 0, 0, 0, 0, loc)
+	}
+	startTime := time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(), st.Hour(), st.Minute(), st.Second(), 0, loc)
+
+	// Map frequency
+	freq := calendarutils.FreqDaily
+	switch rulePB.GetFrequency() {
+	case commonpb.RecurrenceFrequency_RECURRENCE_FREQUENCY_WEEKLY:
+		freq = calendarutils.FreqWeekly
+	case commonpb.RecurrenceFrequency_RECURRENCE_FREQUENCY_DAILY:
+		freq = calendarutils.FreqDaily
+	}
+
+	// Map weekdays 1-7 (Mon-Sun) -> time.Weekday
+	var weekdays []time.Weekday
+	for _, d := range rulePB.GetWeekdays() {
+		if d < 1 || d > 7 {
+			continue
+		}
+		if d == 7 {
+			weekdays = append(weekdays, time.Sunday)
+		} else {
+			weekdays = append(weekdays, time.Weekday(d))
+		}
+	}
+
+	var until *time.Time
+	if rulePB.GetUntil() != nil {
+		u := rulePB.GetUntil().AsTime().In(loc)
+		until = &u
+	} else if sched.EndDate != nil {
+		ed := time.Time(*sched.EndDate).In(loc)
+		u := time.Date(ed.Year(), ed.Month(), ed.Day(), 23, 59, 59, 0, loc)
+		until = &u
+	}
+
+	var count *int
+	if rulePB.GetCount() > 0 {
+		c := int(rulePB.GetCount())
+		count = &c
+	}
+
+	exceptions := map[time.Time]struct{}{}
+	for _, ts := range rulePB.GetExceptions() {
+		if ts == nil {
+			continue
+		}
+		d := ts.AsTime().In(loc)
+		exceptions[time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC)] = struct{}{}
+	}
+	if len(exceptions) == 0 {
+		exceptions = nil
+	}
+
+	rule := calendarutils.RecurringRule{
+		Freq:       freq,
+		Interval:   int(rulePB.GetInterval()),
+		Weekdays:   weekdays,
+		StartTime:  startTime,
+		Duration:   time.Duration(rulePB.GetDurationMin()) * time.Minute,
+		Until:      until,
+		Count:      count,
+		Exceptions: exceptions,
+	}
+
+	intervals, err := calendarutils.ExpandRecurringRule(rule, window)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to UTC for storage / comparison.
+	for i := range intervals {
+		intervals[i].Start = intervals[i].Start.UTC()
+		intervals[i].End = intervals[i].End.UTC()
+	}
+	return intervals, nil
+}
+
+// GetAvailableSlots — alias метода из ТЗ.
+func (s *CalendarService) GetAvailableSlots(
+	ctx context.Context,
+	req *calendarpb.ListFreeSlotsRequest,
+) (*calendarpb.ListFreeSlotsResponse, error) {
+	return s.ListFreeSlots(ctx, req)
+}
+
 // CreateBooking — создание бронирования на слот.
 func (s *CalendarService) CreateBooking(
 	ctx context.Context,
@@ -121,9 +388,13 @@ func (s *CalendarService) CreateBooking(
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid client_id")
 	}
-
-	if err := s.ensureClientRole(ctx, clientID); err != nil {
-		return nil, err
+	// Роль пользователя не ограничивает возможность записываться.
+	// Здесь достаточно того, что client_id существует.
+	if s.db != nil {
+		var c model.Client
+		if err := s.db.WithContext(ctx).First(&c, "id = ?", clientID).Error; err != nil {
+			return nil, status.Errorf(codes.NotFound, "client not found: %v", err)
+		}
 	}
 
 	var resp *calendarpb.CreateBookingResponse
@@ -134,6 +405,27 @@ func (s *CalendarService) CreateBooking(
 		}
 		if slot.Status != model.TimeSlotStatusPlanned {
 			return status.Error(codes.FailedPrecondition, "slot is not free")
+		}
+
+		// Проверка конфликтов по времени (ТЗ 3.5.1–3.5.2):
+		// - у клиента не должно быть пересекающихся подтверждённых бронирований;
+		// - у провайдера не должно быть пересекающихся подтверждённых бронирований.
+		newRange := calendarutils.TimeRange{Start: slot.StartsAt.UTC(), End: slot.EndsAt.UTC()}
+
+		clientRanges, err := s.listClientConfirmedBookingRangesTx(ctx, tx, clientID, slot.ID)
+		if err != nil {
+			return status.Errorf(codes.Internal, "list client booking ranges: %v", err)
+		}
+		if has, _ := calendarutils.HasOverlap(newRange, clientRanges, false); has {
+			return status.Error(codes.FailedPrecondition, "client has conflicting booking")
+		}
+
+		providerRanges, err := s.listProviderConfirmedBookingRangesTx(ctx, tx, slot.ProviderID, slot.ID)
+		if err != nil {
+			return status.Errorf(codes.Internal, "list provider booking ranges: %v", err)
+		}
+		if has, _ := calendarutils.HasOverlap(newRange, providerRanges, false); has {
+			return status.Error(codes.FailedPrecondition, "provider has conflicting booking")
 		}
 
 		booking := &model.Booking{
@@ -161,6 +453,234 @@ func (s *CalendarService) CreateBooking(
 	}
 
 	return resp, nil
+}
+
+// BookSlot — alias метода из ТЗ.
+func (s *CalendarService) BookSlot(
+	ctx context.Context,
+	req *calendarpb.CreateBookingRequest,
+) (*calendarpb.CreateBookingResponse, error) {
+	return s.CreateBooking(ctx, req)
+}
+
+func (s *CalendarService) CheckAvailability(
+	ctx context.Context,
+	req *calendarpb.CheckAvailabilityRequest,
+) (*calendarpb.CheckAvailabilityResponse, error) {
+	if req.GetSlotId() == "" || req.GetClientId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "slot_id and client_id are required")
+	}
+
+	clientID, err := uuid.Parse(req.GetClientId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid client_id")
+	}
+	// Роль пользователя не ограничивает возможность записываться.
+	if s.db != nil {
+		var c model.Client
+		if err := s.db.WithContext(ctx).First(&c, "id = ?", clientID).Error; err != nil {
+			return nil, status.Errorf(codes.NotFound, "client not found: %v", err)
+		}
+	}
+
+	slot, err := s.slotRepo.GetByID(ctx, req.GetSlotId())
+	if err != nil {
+		return &calendarpb.CheckAvailabilityResponse{Available: false, Reason: "slot not found"}, nil
+	}
+	if slot.Status != model.TimeSlotStatusPlanned {
+		return &calendarpb.CheckAvailabilityResponse{Available: false, Reason: "slot is not free"}, nil
+	}
+
+	if s.db != nil {
+		newRange := calendarutils.TimeRange{Start: slot.StartsAt.UTC(), End: slot.EndsAt.UTC()}
+		// Клиентские конфликты (confirmed).
+		clientRanges, err := s.listClientConfirmedBookingRangesTx(ctx, s.db.WithContext(ctx), clientID, slot.ID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "check conflicts: %v", err)
+		}
+		if has, _ := calendarutils.HasOverlap(newRange, clientRanges, false); has {
+			return &calendarpb.CheckAvailabilityResponse{Available: false, Reason: "client has conflicting booking"}, nil
+		}
+		// Провайдерские конфликты (confirmed).
+		providerRanges, err := s.listProviderConfirmedBookingRangesTx(ctx, s.db.WithContext(ctx), slot.ProviderID, slot.ID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "check conflicts: %v", err)
+		}
+		if has, _ := calendarutils.HasOverlap(newRange, providerRanges, false); has {
+			return &calendarpb.CheckAvailabilityResponse{Available: false, Reason: "provider has conflicting booking"}, nil
+		}
+	}
+
+	return &calendarpb.CheckAvailabilityResponse{Available: true}, nil
+}
+
+func (s *CalendarService) ExpandSchedule(
+	ctx context.Context,
+	req *calendarpb.ExpandScheduleRequest,
+) (*calendarpb.ExpandScheduleResponse, error) {
+	if req.GetScheduleId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "schedule_id is required")
+	}
+	if req.GetWindowStart() == nil || req.GetWindowEnd() == nil {
+		return nil, status.Error(codes.InvalidArgument, "window_start and window_end are required")
+	}
+
+	sched, err := s.scheduleRepo.GetByID(ctx, req.GetScheduleId())
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "schedule not found: %v", err)
+	}
+
+	// Расширение делаем для владельца расписания (provider).
+	if err := s.ensureProviderRole(ctx, sched.ProviderID.String()); err != nil {
+		return nil, err
+	}
+
+	fromUTC := req.GetWindowStart().AsTime().UTC()
+	toUTC := req.GetWindowEnd().AsTime().UTC()
+	if !toUTC.After(fromUTC) {
+		return nil, status.Error(codes.InvalidArgument, "window_end must be after window_start")
+	}
+
+	intervals, err := s.expandScheduleModelInWindowUTC(sched, fromUTC, toUTC)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "expand rule: %v", err)
+	}
+
+	resp := &calendarpb.ExpandScheduleResponse{Intervals: make([]*commonpb.TimeRange, 0, len(intervals))}
+	for _, it := range intervals {
+		resp.Intervals = append(resp.Intervals, &commonpb.TimeRange{
+			Start: timestamppb.New(it.Start),
+			End:   timestamppb.New(it.End),
+		})
+	}
+
+	return resp, nil
+}
+
+func (s *CalendarService) ValidateSlot(
+	ctx context.Context,
+	req *calendarpb.ValidateSlotRequest,
+) (*calendarpb.ValidateSlotResponse, error) {
+	if req.GetSlotId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "slot_id is required")
+	}
+	slot, err := s.slotRepo.GetByID(ctx, req.GetSlotId())
+	if err != nil {
+		return &calendarpb.ValidateSlotResponse{Valid: false, Reason: "slot not found"}, nil
+	}
+
+	valid, reason := validateSlotModel(slot, req.GetProviderId(), req.GetServiceId())
+	if !valid {
+		return &calendarpb.ValidateSlotResponse{Valid: false, Reason: reason, Slot: mapSlot(slot)}, nil
+	}
+	return &calendarpb.ValidateSlotResponse{Valid: true, Slot: mapSlot(slot)}, nil
+}
+
+func validateSlotModel(slot *model.TimeSlot, expectedProviderID, expectedServiceID string) (bool, string) {
+	if slot == nil {
+		return false, "slot not found"
+	}
+	if !slot.EndsAt.After(slot.StartsAt) {
+		return false, "invalid slot time range"
+	}
+	if slot.Status != model.TimeSlotStatusPlanned {
+		return false, "slot is not free"
+	}
+	if expectedProviderID != "" && slot.ProviderID.String() != expectedProviderID {
+		return false, "slot provider mismatch"
+	}
+	if expectedServiceID != "" {
+		actual := ""
+		if slot.ServiceID != nil {
+			actual = slot.ServiceID.String()
+		}
+		if actual != expectedServiceID {
+			return false, "slot service mismatch"
+		}
+	}
+	return true, ""
+}
+
+type dbTimeRange struct {
+	StartsAt time.Time `gorm:"column:starts_at"`
+	EndsAt   time.Time `gorm:"column:ends_at"`
+}
+
+func (s *CalendarService) listClientConfirmedBookingRangesTx(
+	ctx context.Context,
+	tx *gorm.DB,
+	clientID uuid.UUID,
+	excludeSlotID uuid.UUID,
+) ([]calendarutils.TimeRange, error) {
+	if tx == nil {
+		return []calendarutils.TimeRange{}, nil
+	}
+	var rows []dbTimeRange
+	err := tx.WithContext(ctx).
+		Table("bookings").
+		Select("time_slots.starts_at AS starts_at, time_slots.ends_at AS ends_at").
+		Joins("JOIN time_slots ON time_slots.id = bookings.slot_id").
+		Where("bookings.client_id = ?", clientID).
+		Where("bookings.status = ?", model.BookingStatusConfirmed).
+		Where("time_slots.id <> ?", excludeSlotID).
+		Order("time_slots.starts_at ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	res := make([]calendarutils.TimeRange, 0, len(rows))
+	for _, r := range rows {
+		res = append(res, calendarutils.TimeRange{Start: r.StartsAt.UTC(), End: r.EndsAt.UTC()})
+	}
+	return res, nil
+}
+
+func (s *CalendarService) listProviderConfirmedBookingRangesTx(
+	ctx context.Context,
+	tx *gorm.DB,
+	providerID uuid.UUID,
+	excludeSlotID uuid.UUID,
+) ([]calendarutils.TimeRange, error) {
+	if tx == nil {
+		return []calendarutils.TimeRange{}, nil
+	}
+	var rows []dbTimeRange
+	err := tx.WithContext(ctx).
+		Table("bookings").
+		Select("time_slots.starts_at AS starts_at, time_slots.ends_at AS ends_at").
+		Joins("JOIN time_slots ON time_slots.id = bookings.slot_id").
+		Where("time_slots.provider_id = ?", providerID).
+		Where("bookings.status = ?", model.BookingStatusConfirmed).
+		Where("time_slots.id <> ?", excludeSlotID).
+		Order("time_slots.starts_at ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	res := make([]calendarutils.TimeRange, 0, len(rows))
+	for _, r := range rows {
+		res = append(res, calendarutils.TimeRange{Start: r.StartsAt.UTC(), End: r.EndsAt.UTC()})
+	}
+	return res, nil
+}
+
+func (s *CalendarService) clientHasTimeConflict(ctx context.Context, clientID uuid.UUID, start, end time.Time) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	// Считаем конфликтом любое пересечение интервалов с активными (confirmed) бронированиями клиента.
+	var count int64
+	err := s.db.WithContext(ctx).
+		Table("bookings").
+		Joins("JOIN time_slots ON time_slots.id = bookings.slot_id").
+		Where("bookings.client_id = ?", clientID).
+		Where("bookings.status = ?", model.BookingStatusConfirmed).
+		Where("time_slots.starts_at < ? AND time_slots.ends_at > ?", end, start).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // GetBooking — получить бронирование.
@@ -415,6 +935,135 @@ func (s *CalendarService) DeleteProviderSchedule(
 	return &calendarpb.DeleteProviderScheduleResponse{}, nil
 }
 
+// BulkCancelProviderSlots — массовая отмена слотов провайдера в интервале.
+// Отменяет и связанные бронирования (если есть) и возвращает список затронутых записей,
+// чтобы внешний слой мог уведомить клиентов.
+func (s *CalendarService) BulkCancelProviderSlots(
+	ctx context.Context,
+	req *calendarpb.BulkCancelProviderSlotsRequest,
+) (*calendarpb.BulkCancelProviderSlotsResponse, error) {
+	if req.GetProviderId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "provider_id is required")
+	}
+	if req.GetStart() == nil || req.GetEnd() == nil {
+		return nil, status.Error(codes.InvalidArgument, "start and end are required")
+	}
+	start := req.GetStart().AsTime()
+	end := req.GetEnd().AsTime()
+	if !end.After(start) {
+		return nil, status.Error(codes.InvalidArgument, "end must be after start")
+	}
+	if s.db == nil {
+		return nil, status.Error(codes.FailedPrecondition, "db is not configured")
+	}
+
+	if err := s.ensureProviderRole(ctx, req.GetProviderId()); err != nil {
+		return nil, err
+	}
+
+	type affectedBookingRow struct {
+		BookingID        string    `gorm:"column:booking_id"`
+		SlotID           string    `gorm:"column:slot_id"`
+		ClientID         string    `gorm:"column:client_id"`
+		ClientUserID     string    `gorm:"column:client_user_id"`
+		ClientTelegramID int64     `gorm:"column:client_telegram_id"`
+		ProviderID       string    `gorm:"column:provider_id"`
+		ServiceID        *string   `gorm:"column:service_id"`
+		StartsAt         time.Time `gorm:"column:starts_at"`
+		EndsAt           time.Time `gorm:"column:ends_at"`
+	}
+
+	resp := &calendarpb.BulkCancelProviderSlotsResponse{
+		AffectedBookings: []*calendarpb.AffectedBooking{},
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1) Собрать активные бронирования в окне (для уведомлений) до обновлений.
+		var rows []affectedBookingRow
+		q := tx.Table("bookings").
+			Select(
+				"bookings.id AS booking_id, bookings.slot_id AS slot_id, bookings.client_id AS client_id, "+
+					"clients.user_id AS client_user_id, users.telegram_id AS client_telegram_id, "+
+					"time_slots.provider_id AS provider_id, time_slots.service_id AS service_id, "+
+					"time_slots.starts_at AS starts_at, time_slots.ends_at AS ends_at",
+			).
+			Joins("JOIN time_slots ON time_slots.id = bookings.slot_id").
+			Joins("JOIN clients ON clients.id = bookings.client_id").
+			Joins("JOIN users ON users.id = clients.user_id").
+			Where("time_slots.provider_id = ?", req.GetProviderId()).
+			Where("time_slots.starts_at >= ? AND time_slots.ends_at <= ?", start, end).
+			Where("time_slots.status <> ?", model.TimeSlotStatusCancelled).
+			Where("bookings.status <> ?", model.BookingStatusCancelled)
+
+		if err := q.Scan(&rows).Error; err != nil {
+			return status.Errorf(codes.Internal, "list affected bookings: %v", err)
+		}
+
+		// 2) Отменить бронирования (если есть).
+		var cancelledBookings int64
+		if len(rows) > 0 {
+			bookingIDs := make([]string, 0, len(rows))
+			for i := range rows {
+				bookingIDs = append(bookingIDs, rows[i].BookingID)
+			}
+			now := time.Now().UTC()
+			update := map[string]any{
+				"status":       model.BookingStatusCancelled,
+				"cancelled_at": now,
+			}
+			if req.GetReason() != "" {
+				update["comment"] = req.GetReason()
+			}
+			res := tx.Model(&model.Booking{}).
+				Where("id IN ?", bookingIDs).
+				Where("status <> ?", model.BookingStatusCancelled).
+				Updates(update)
+			if res.Error != nil {
+				return status.Errorf(codes.Internal, "cancel bookings: %v", res.Error)
+			}
+			cancelledBookings = res.RowsAffected
+
+			resp.AffectedBookings = make([]*calendarpb.AffectedBooking, 0, len(rows))
+			for i := range rows {
+				serviceID := ""
+				if rows[i].ServiceID != nil {
+					serviceID = *rows[i].ServiceID
+				}
+				resp.AffectedBookings = append(resp.AffectedBookings, &calendarpb.AffectedBooking{
+					BookingId:        rows[i].BookingID,
+					SlotId:           rows[i].SlotID,
+					ClientId:         rows[i].ClientID,
+					ClientUserId:     rows[i].ClientUserID,
+					ClientTelegramId: rows[i].ClientTelegramID,
+					ProviderId:       rows[i].ProviderID,
+					ServiceId:        serviceID,
+					StartsAt:         timestamppb.New(rows[i].StartsAt),
+					EndsAt:           timestamppb.New(rows[i].EndsAt),
+				})
+			}
+		}
+		resp.CancelledBookings = int32(cancelledBookings)
+
+		// 3) Отменить слоты провайдера в окне.
+		res := tx.Model(&model.TimeSlot{}).
+			Where("provider_id = ?", req.GetProviderId()).
+			Where("starts_at >= ? AND ends_at <= ?", start, end).
+			Where("status <> ?", model.TimeSlotStatusCancelled).
+			Update("status", model.TimeSlotStatusCancelled)
+		if res.Error != nil {
+			return status.Errorf(codes.Internal, "cancel slots: %v", res.Error)
+		}
+		resp.CancelledSlots = int32(res.RowsAffected)
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 // CreateSlot — добавить слот провайдера.
 func (s *CalendarService) CreateSlot(
 	ctx context.Context,
@@ -531,6 +1180,98 @@ func (s *CalendarService) DeleteSlot(
 		return nil, status.Errorf(codes.Internal, "delete slot: %v", err)
 	}
 	return &calendarpb.DeleteSlotResponse{}, nil
+}
+
+func (s *CalendarService) ListServices(
+	ctx context.Context,
+	req *calendarpb.ListServicesRequest,
+) (*calendarpb.ListServicesResponse, error) {
+	if s.serviceRepo == nil {
+		return nil, status.Error(codes.Internal, "service repository is not configured")
+	}
+
+	onlyActive := true
+	if req != nil {
+		// default true
+		if req.GetOnlyActive() == false {
+			onlyActive = false
+		}
+	}
+
+	page := int32(1)
+	size := int32(50)
+	if req != nil {
+		if req.GetPage() > 0 {
+			page = req.GetPage()
+		}
+		if req.GetPageSize() > 0 {
+			size = req.GetPageSize()
+		}
+	}
+	offset := (int(page) - 1) * int(size)
+
+	items, total, err := s.serviceRepo.List(ctx, onlyActive, int(size), offset)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list services: %v", err)
+	}
+
+	resp := &calendarpb.ListServicesResponse{Services: make([]*commonpb.Service, 0, len(items)), TotalCount: int32(total)}
+	for i := range items {
+		resp.Services = append(resp.Services, mapService(&items[i]))
+	}
+	return resp, nil
+}
+
+func (s *CalendarService) ListProviderServices(
+	ctx context.Context,
+	req *calendarpb.ListProviderServicesRequest,
+) (*calendarpb.ListProviderServicesResponse, error) {
+	if req.GetProviderId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "provider_id is required")
+	}
+	if s.providerRepo == nil || s.serviceRepo == nil {
+		return nil, status.Error(codes.Internal, "repositories are not configured")
+	}
+
+	provider, err := s.providerRepo.GetByID(ctx, req.GetProviderId())
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "provider not found: %v", err)
+	}
+
+	providerID, err := uuid.Parse(req.GetProviderId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid provider_id")
+	}
+	services, err := s.serviceRepo.ListByProvider(ctx, providerID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list provider services: %v", err)
+	}
+
+	resp := &calendarpb.ListProviderServicesResponse{
+		Provider: &commonpb.Provider{Id: provider.ID.String(), DisplayName: provider.DisplayName, Description: provider.Description},
+		Services: make([]*commonpb.Service, 0, len(services)),
+	}
+	for i := range services {
+		resp.Services = append(resp.Services, mapService(&services[i]))
+	}
+	return resp, nil
+}
+
+func mapService(sv *model.Service) *commonpb.Service {
+	if sv == nil {
+		return nil
+	}
+	var d int32
+	if sv.DefaultDurationMin != nil {
+		d = int32(*sv.DefaultDurationMin)
+	}
+	return &commonpb.Service{
+		Id:                 sv.ID.String(),
+		Name:               sv.Name,
+		Description:        sv.Description,
+		DefaultDurationMin: d,
+		IsActive:           sv.IsActive,
+	}
 }
 
 func mapSlotStatus(s model.TimeSlotStatus) commonpb.SlotStatus {
@@ -690,6 +1431,7 @@ type scheduleRuleDTO struct {
 	DurationMin int32                        `json:"duration_min,omitempty"`
 	Until       *time.Time                   `json:"until,omitempty"`
 	Count       int32                        `json:"count,omitempty"`
+	Exceptions  []time.Time                  `json:"exceptions,omitempty"`
 }
 
 func encodeScheduleRule(rule *commonpb.ScheduleRule) (datatypes.JSON, error) {
@@ -712,6 +1454,18 @@ func encodeScheduleRule(rule *commonpb.ScheduleRule) (datatypes.JSON, error) {
 	if rule.GetUntil() != nil {
 		t := rule.GetUntil().AsTime()
 		dto.Until = &t
+	}
+	if len(rule.GetExceptions()) > 0 {
+		ex := make([]time.Time, 0, len(rule.GetExceptions()))
+		for _, ts := range rule.GetExceptions() {
+			if ts == nil {
+				continue
+			}
+			// Храним только дату (time at 00:00 UTC) для стабильного сравнения.
+			t := ts.AsTime().UTC()
+			ex = append(ex, time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC))
+		}
+		dto.Exceptions = ex
 	}
 
 	data, err := json.Marshal(dto)
@@ -738,6 +1492,15 @@ func decodeScheduleRule(raw datatypes.JSON) *commonpb.ScheduleRule {
 		until = timestamppb.New(*dto.Until)
 	}
 
+	var exceptions []*timestamppb.Timestamp
+	if len(dto.Exceptions) > 0 {
+		exceptions = make([]*timestamppb.Timestamp, 0, len(dto.Exceptions))
+		for _, d := range dto.Exceptions {
+			d = d.UTC()
+			exceptions = append(exceptions, timestamppb.New(time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC)))
+		}
+	}
+
 	return &commonpb.ScheduleRule{
 		Frequency:   dto.Frequency,
 		Interval:    dto.Interval,
@@ -746,6 +1509,7 @@ func decodeScheduleRule(raw datatypes.JSON) *commonpb.ScheduleRule {
 		DurationMin: dto.DurationMin,
 		Until:       until,
 		Count:       dto.Count,
+		Exceptions:  exceptions,
 	}
 }
 

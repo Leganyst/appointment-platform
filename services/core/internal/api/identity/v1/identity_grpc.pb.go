@@ -18,10 +18,16 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type IdentityServiceClient interface {
+	// Регистрация пользователя по Telegram ID или возврат уже существующего.
 	RegisterUser(ctx context.Context, in *RegisterUserRequest, opts ...grpc.CallOption) (*RegisterUserResponse, error)
+	// Обновление контактных данных пользователя по Telegram ID.
 	UpdateContacts(ctx context.Context, in *UpdateContactsRequest, opts ...grpc.CallOption) (*UpdateContactsResponse, error)
+	// Назначение роли пользователю по Telegram ID.
 	SetRole(ctx context.Context, in *SetRoleRequest, opts ...grpc.CallOption) (*SetRoleResponse, error)
+	// Получение профиля пользователя по Telegram ID.
 	GetProfile(ctx context.Context, in *GetProfileRequest, opts ...grpc.CallOption) (*GetProfileResponse, error)
+	// Поиск провайдера по номеру телефона.
+	FindProviderByPhone(ctx context.Context, in *FindProviderByPhoneRequest, opts ...grpc.CallOption) (*FindProviderByPhoneResponse, error)
 }
 
 type identityServiceClient struct {
@@ -68,14 +74,29 @@ func (c *identityServiceClient) GetProfile(ctx context.Context, in *GetProfileRe
 	return out, nil
 }
 
+func (c *identityServiceClient) FindProviderByPhone(ctx context.Context, in *FindProviderByPhoneRequest, opts ...grpc.CallOption) (*FindProviderByPhoneResponse, error) {
+	out := new(FindProviderByPhoneResponse)
+	err := c.cc.Invoke(ctx, "/identity.v1.IdentityService/FindProviderByPhone", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IdentityServiceServer is the server API for IdentityService service.
 // All implementations must embed UnimplementedIdentityServiceServer
 // for forward compatibility
 type IdentityServiceServer interface {
+	// Регистрация пользователя по Telegram ID или возврат уже существующего.
 	RegisterUser(context.Context, *RegisterUserRequest) (*RegisterUserResponse, error)
+	// Обновление контактных данных пользователя по Telegram ID.
 	UpdateContacts(context.Context, *UpdateContactsRequest) (*UpdateContactsResponse, error)
+	// Назначение роли пользователю по Telegram ID.
 	SetRole(context.Context, *SetRoleRequest) (*SetRoleResponse, error)
+	// Получение профиля пользователя по Telegram ID.
 	GetProfile(context.Context, *GetProfileRequest) (*GetProfileResponse, error)
+	// Поиск провайдера по номеру телефона.
+	FindProviderByPhone(context.Context, *FindProviderByPhoneRequest) (*FindProviderByPhoneResponse, error)
 	mustEmbedUnimplementedIdentityServiceServer()
 }
 
@@ -94,6 +115,9 @@ func (UnimplementedIdentityServiceServer) SetRole(context.Context, *SetRoleReque
 }
 func (UnimplementedIdentityServiceServer) GetProfile(context.Context, *GetProfileRequest) (*GetProfileResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetProfile not implemented")
+}
+func (UnimplementedIdentityServiceServer) FindProviderByPhone(context.Context, *FindProviderByPhoneRequest) (*FindProviderByPhoneResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FindProviderByPhone not implemented")
 }
 func (UnimplementedIdentityServiceServer) mustEmbedUnimplementedIdentityServiceServer() {}
 
@@ -180,6 +204,24 @@ func _IdentityService_GetProfile_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IdentityService_FindProviderByPhone_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FindProviderByPhoneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IdentityServiceServer).FindProviderByPhone(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/identity.v1.IdentityService/FindProviderByPhone",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IdentityServiceServer).FindProviderByPhone(ctx, req.(*FindProviderByPhoneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // IdentityService_ServiceDesc is the grpc.ServiceDesc for IdentityService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -202,6 +244,10 @@ var IdentityService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetProfile",
 			Handler:    _IdentityService_GetProfile_Handler,
+		},
+		{
+			MethodName: "FindProviderByPhone",
+			Handler:    _IdentityService_FindProviderByPhone_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

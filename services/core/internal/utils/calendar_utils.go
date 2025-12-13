@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -33,6 +34,7 @@ func NewTimeRange(start, end time.Time) (TimeRange, error) {
 //   - меняет местами границы, если они перепутаны;
 //   - переводит в заданный часовой пояс loc;
 //   - при превышении maxDuration обрезает интервал до start+maxDuration.
+//
 // Если maxDuration <= 0, ограничение по длительности не применяется.
 func NormalizeTimeRange(
 	start, end time.Time,
@@ -158,12 +160,12 @@ const (
 
 type RecurringRule struct {
 	Freq      RecurrenceFrequency
-	Interval  int              // шаг: каждые Interval дней/недель (>=1)
-	Weekdays  []time.Weekday   // для FreqWeekly
-	StartTime time.Time        // начальное начало слота
-	Duration  time.Duration    // длительность слота
-	Until     *time.Time       // опционально: дата/время окончания
-	Count     *int             // опционально: максимальное количество повторений
+	Interval  int            // шаг: каждые Interval дней/недель (>=1)
+	Weekdays  []time.Weekday // для FreqWeekly
+	StartTime time.Time      // начальное начало слота
+	Duration  time.Duration  // длительность слота
+	Until     *time.Time     // опционально: дата/время окончания
+	Count     *int           // опционально: максимальное количество повторений
 	// Исключения по датам (используем дату без времени).
 	Exceptions map[time.Time]struct{}
 }
@@ -186,6 +188,71 @@ func ExpandRecurringRule(rule RecurringRule, window TimeRange) ([]TimeRange, err
 
 	var result []TimeRange
 	countGenerated := 0
+
+	// Weekly with explicit weekdays: generate occurrences for each weekday in each stepped week.
+	if rule.Freq == FreqWeekly && len(rule.Weekdays) > 0 {
+		weekdays := uniqueSortedWeekdays(rule.Weekdays)
+		startLoc := rule.StartTime.Location()
+		startHour, startMin, startSec := rule.StartTime.Clock()
+
+		weekCursor := rule.StartTime
+		for {
+			// Stop by Count.
+			if rule.Count != nil && countGenerated >= *rule.Count {
+				break
+			}
+
+			weekStart := weekStartMonday(weekCursor)
+			// Stop once we're clearly past the window.
+			if weekStart.After(window.End) {
+				break
+			}
+
+			for _, wd := range weekdays {
+				// Stop by Count.
+				if rule.Count != nil && countGenerated >= *rule.Count {
+					break
+				}
+
+				d := weekStart.AddDate(0, 0, offsetFromMonday(wd))
+				occStart := time.Date(d.Year(), d.Month(), d.Day(), startHour, startMin, startSec, 0, startLoc)
+				// Не генерируем события до исходного якоря.
+				if occStart.Before(rule.StartTime) {
+					continue
+				}
+
+				// Ограничение по Until.
+				if rule.Until != nil && occStart.After(*rule.Until) {
+					// Дальше по дням недели/неделям будет только позже.
+					return result, nil
+				}
+
+				// Исключения по дате.
+				if isException(rule, occStart) {
+					continue
+				}
+
+				occEnd := occStart.Add(rule.Duration)
+				occRange := TimeRange{Start: occStart, End: occEnd}
+
+				if rangesOverlap(occRange, window, false) {
+					result = append(result, occRange)
+					countGenerated++
+				} else if occStart.After(window.End) && occEnd.After(window.End) {
+					// Для текущей недели дальше по дням может быть ещё позже — прерываем внутренний цикл.
+					break
+				}
+			}
+
+			// Переходим к следующей неделе с учётом interval.
+			weekCursor = weekCursor.AddDate(0, 0, 7*rule.Interval)
+			if rule.Until != nil && weekCursor.After(*rule.Until) {
+				break
+			}
+		}
+
+		return result, nil
+	}
 
 	cur := rule.StartTime
 
@@ -232,6 +299,42 @@ func ExpandRecurringRule(rule RecurringRule, window TimeRange) ([]TimeRange, err
 	return result, nil
 }
 
+func uniqueSortedWeekdays(days []time.Weekday) []time.Weekday {
+	seen := make(map[time.Weekday]struct{}, len(days))
+	uniq := make([]time.Weekday, 0, len(days))
+	for _, d := range days {
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		seen[d] = struct{}{}
+		uniq = append(uniq, d)
+	}
+	sort.Slice(uniq, func(i, j int) bool { return uniq[i] < uniq[j] })
+	return uniq
+}
+
+// weekStartMonday возвращает начало ISO-недели (понедельник 00:00) для даты t в её локации.
+func weekStartMonday(t time.Time) time.Time {
+	loc := t.Location()
+	y, m, d := t.Date()
+	midnight := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	wd := midnight.Weekday()
+	var delta int
+	if wd == time.Sunday {
+		delta = 6
+	} else {
+		delta = int(wd) - 1 // Monday=1 -> 0
+	}
+	return midnight.AddDate(0, 0, -delta)
+}
+
+func offsetFromMonday(wd time.Weekday) int {
+	if wd == time.Sunday {
+		return 6
+	}
+	return int(wd) - 1
+}
+
 func nextOccurrence(rule RecurringRule, cur time.Time) time.Time {
 	switch rule.Freq {
 	case FreqDaily:
@@ -263,7 +366,9 @@ func isException(rule RecurringRule, t time.Time) bool {
 
 func dateOnly(t time.Time) time.Time {
 	year, month, day := t.Date()
-	return time.Date(year, month, day, 0, 0, 0, 0, t.Location())
+	// Нормализуем дату в UTC, чтобы исключения совпадали независимо от location.
+	// При этом year/month/day берутся в локали времени t (t.Date()).
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
 
 // ===== Форматирование слота для пользователя =====
@@ -324,10 +429,10 @@ const (
 type UserRole string
 
 const (
-	UserRoleClient    UserRole = "client"
-	UserRoleProvider  UserRole = "provider"
-	UserRoleAdmin     UserRole = "admin"
-	UserRoleUnknown   UserRole = "unknown"
+	UserRoleClient   UserRole = "client"
+	UserRoleProvider UserRole = "provider"
+	UserRoleAdmin    UserRole = "admin"
+	UserRoleUnknown  UserRole = "unknown"
 )
 
 // User описывает пользователя в системе.

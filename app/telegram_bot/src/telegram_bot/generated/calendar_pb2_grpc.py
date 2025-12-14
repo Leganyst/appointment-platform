@@ -67,6 +67,11 @@ class CalendarServiceStub(object):
                 request_serializer=calendar__pb2.CancelBookingRequest.SerializeToString,
                 response_deserializer=calendar__pb2.CancelBookingResponse.FromString,
                 _registered_method=True)
+        self.ConfirmBooking = channel.unary_unary(
+                '/calendar.v1.CalendarService/ConfirmBooking',
+                request_serializer=calendar__pb2.ConfirmBookingRequest.SerializeToString,
+                response_deserializer=calendar__pb2.ConfirmBookingResponse.FromString,
+                _registered_method=True)
         self.CheckAvailability = channel.unary_unary(
                 '/calendar.v1.CalendarService/CheckAvailability',
                 request_serializer=calendar__pb2.CheckAvailabilityRequest.SerializeToString,
@@ -101,6 +106,11 @@ class CalendarServiceStub(object):
                 '/calendar.v1.CalendarService/ListBookings',
                 request_serializer=calendar__pb2.ListBookingsRequest.SerializeToString,
                 response_deserializer=calendar__pb2.ListBookingsResponse.FromString,
+                _registered_method=True)
+        self.ListProviderBookings = channel.unary_unary(
+                '/calendar.v1.CalendarService/ListProviderBookings',
+                request_serializer=calendar__pb2.ListProviderBookingsRequest.SerializeToString,
+                response_deserializer=calendar__pb2.ListProviderBookingsResponse.FromString,
                 _registered_method=True)
         self.ListProviderSchedules = channel.unary_unary(
                 '/calendar.v1.CalendarService/ListProviderSchedules',
@@ -142,15 +152,30 @@ class CalendarServiceStub(object):
                 request_serializer=calendar__pb2.DeleteSlotRequest.SerializeToString,
                 response_deserializer=calendar__pb2.DeleteSlotResponse.FromString,
                 _registered_method=True)
+        self.ListProviderSlots = channel.unary_unary(
+                '/calendar.v1.CalendarService/ListProviderSlots',
+                request_serializer=calendar__pb2.ListProviderSlotsRequest.SerializeToString,
+                response_deserializer=calendar__pb2.ListProviderSlotsResponse.FromString,
+                _registered_method=True)
         self.ListServices = channel.unary_unary(
                 '/calendar.v1.CalendarService/ListServices',
                 request_serializer=calendar__pb2.ListServicesRequest.SerializeToString,
                 response_deserializer=calendar__pb2.ListServicesResponse.FromString,
                 _registered_method=True)
+        self.ListProviders = channel.unary_unary(
+                '/calendar.v1.CalendarService/ListProviders',
+                request_serializer=calendar__pb2.ListProvidersRequest.SerializeToString,
+                response_deserializer=calendar__pb2.ListProvidersResponse.FromString,
+                _registered_method=True)
         self.ListProviderServices = channel.unary_unary(
                 '/calendar.v1.CalendarService/ListProviderServices',
                 request_serializer=calendar__pb2.ListProviderServicesRequest.SerializeToString,
                 response_deserializer=calendar__pb2.ListProviderServicesResponse.FromString,
+                _registered_method=True)
+        self.UpdateProviderProfile = channel.unary_unary(
+                '/calendar.v1.CalendarService/UpdateProviderProfile',
+                request_serializer=calendar__pb2.UpdateProviderProfileRequest.SerializeToString,
+                response_deserializer=calendar__pb2.UpdateProviderProfileResponse.FromString,
                 _registered_method=True)
 
 
@@ -202,6 +227,13 @@ class CalendarServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ConfirmBooking(self, request, context):
+        """Подтверждение бронирования (из ожидания в confirmed).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def CheckAvailability(self, request, context):
         """Проверка доступности слота.
         """
@@ -246,6 +278,13 @@ class CalendarServiceServicer(object):
 
     def ListBookings(self, request, context):
         """Список бронирований клиента за период.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListProviderBookings(self, request, context):
+        """Список бронирований провайдера за период.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -307,6 +346,13 @@ class CalendarServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListProviderSlots(self, request, context):
+        """Список слотов провайдера (со статусами и бронями).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ListServices(self, request, context):
         """Публичный каталог услуг.
         """
@@ -314,8 +360,22 @@ class CalendarServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListProviders(self, request, context):
+        """Публичный список провайдеров (опционально отфильтрованный по услуге).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ListProviderServices(self, request, context):
         """Публичный профиль провайдера + его услуги.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateProviderProfile(self, request, context):
+        """Обновление профиля провайдера.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -354,6 +414,11 @@ def add_CalendarServiceServicer_to_server(servicer, server):
                     request_deserializer=calendar__pb2.CancelBookingRequest.FromString,
                     response_serializer=calendar__pb2.CancelBookingResponse.SerializeToString,
             ),
+            'ConfirmBooking': grpc.unary_unary_rpc_method_handler(
+                    servicer.ConfirmBooking,
+                    request_deserializer=calendar__pb2.ConfirmBookingRequest.FromString,
+                    response_serializer=calendar__pb2.ConfirmBookingResponse.SerializeToString,
+            ),
             'CheckAvailability': grpc.unary_unary_rpc_method_handler(
                     servicer.CheckAvailability,
                     request_deserializer=calendar__pb2.CheckAvailabilityRequest.FromString,
@@ -388,6 +453,11 @@ def add_CalendarServiceServicer_to_server(servicer, server):
                     servicer.ListBookings,
                     request_deserializer=calendar__pb2.ListBookingsRequest.FromString,
                     response_serializer=calendar__pb2.ListBookingsResponse.SerializeToString,
+            ),
+            'ListProviderBookings': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListProviderBookings,
+                    request_deserializer=calendar__pb2.ListProviderBookingsRequest.FromString,
+                    response_serializer=calendar__pb2.ListProviderBookingsResponse.SerializeToString,
             ),
             'ListProviderSchedules': grpc.unary_unary_rpc_method_handler(
                     servicer.ListProviderSchedules,
@@ -429,15 +499,30 @@ def add_CalendarServiceServicer_to_server(servicer, server):
                     request_deserializer=calendar__pb2.DeleteSlotRequest.FromString,
                     response_serializer=calendar__pb2.DeleteSlotResponse.SerializeToString,
             ),
+            'ListProviderSlots': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListProviderSlots,
+                    request_deserializer=calendar__pb2.ListProviderSlotsRequest.FromString,
+                    response_serializer=calendar__pb2.ListProviderSlotsResponse.SerializeToString,
+            ),
             'ListServices': grpc.unary_unary_rpc_method_handler(
                     servicer.ListServices,
                     request_deserializer=calendar__pb2.ListServicesRequest.FromString,
                     response_serializer=calendar__pb2.ListServicesResponse.SerializeToString,
             ),
+            'ListProviders': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListProviders,
+                    request_deserializer=calendar__pb2.ListProvidersRequest.FromString,
+                    response_serializer=calendar__pb2.ListProvidersResponse.SerializeToString,
+            ),
             'ListProviderServices': grpc.unary_unary_rpc_method_handler(
                     servicer.ListProviderServices,
                     request_deserializer=calendar__pb2.ListProviderServicesRequest.FromString,
                     response_serializer=calendar__pb2.ListProviderServicesResponse.SerializeToString,
+            ),
+            'UpdateProviderProfile': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateProviderProfile,
+                    request_deserializer=calendar__pb2.UpdateProviderProfileRequest.FromString,
+                    response_serializer=calendar__pb2.UpdateProviderProfileResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -605,6 +690,33 @@ class CalendarService(object):
             '/calendar.v1.CalendarService/CancelBooking',
             calendar__pb2.CancelBookingRequest.SerializeToString,
             calendar__pb2.CancelBookingResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ConfirmBooking(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/calendar.v1.CalendarService/ConfirmBooking',
+            calendar__pb2.ConfirmBookingRequest.SerializeToString,
+            calendar__pb2.ConfirmBookingResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -794,6 +906,33 @@ class CalendarService(object):
             '/calendar.v1.CalendarService/ListBookings',
             calendar__pb2.ListBookingsRequest.SerializeToString,
             calendar__pb2.ListBookingsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListProviderBookings(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/calendar.v1.CalendarService/ListProviderBookings',
+            calendar__pb2.ListProviderBookingsRequest.SerializeToString,
+            calendar__pb2.ListProviderBookingsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1021,6 +1160,33 @@ class CalendarService(object):
             _registered_method=True)
 
     @staticmethod
+    def ListProviderSlots(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/calendar.v1.CalendarService/ListProviderSlots',
+            calendar__pb2.ListProviderSlotsRequest.SerializeToString,
+            calendar__pb2.ListProviderSlotsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ListServices(request,
             target,
             options=(),
@@ -1048,6 +1214,33 @@ class CalendarService(object):
             _registered_method=True)
 
     @staticmethod
+    def ListProviders(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/calendar.v1.CalendarService/ListProviders',
+            calendar__pb2.ListProvidersRequest.SerializeToString,
+            calendar__pb2.ListProvidersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ListProviderServices(request,
             target,
             options=(),
@@ -1064,6 +1257,33 @@ class CalendarService(object):
             '/calendar.v1.CalendarService/ListProviderServices',
             calendar__pb2.ListProviderServicesRequest.SerializeToString,
             calendar__pb2.ListProviderServicesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateProviderProfile(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/calendar.v1.CalendarService/UpdateProviderProfile',
+            calendar__pb2.UpdateProviderProfileRequest.SerializeToString,
+            calendar__pb2.UpdateProviderProfileResponse.FromString,
             options,
             channel_credentials,
             insecure,

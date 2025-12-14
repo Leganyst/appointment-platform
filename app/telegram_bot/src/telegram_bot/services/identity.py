@@ -48,6 +48,40 @@ async def set_role(
     return _to_user(resp.user)
 
 
+async def update_contacts(
+    stub: identity_pb2_grpc.IdentityServiceStub,
+    *,
+    telegram_id: int,
+    display_name: str | None = None,
+    username: str | None = None,
+    contact_phone: str | None = None,
+    metadata=None,
+    timeout: float | None = None,
+) -> IdentityUser:
+    req = identity_pb2.UpdateContactsRequest(
+        telegram_id=telegram_id,
+        display_name=display_name or "",
+        username=username or "",
+        contact_phone=contact_phone or "",
+    )
+    resp = await stub.UpdateContacts(req, metadata=metadata, timeout=timeout)
+    return _to_user(resp.user)
+
+
+async def find_provider_by_phone(
+    stub: identity_pb2_grpc.IdentityServiceStub,
+    *,
+    phone: str,
+    metadata=None,
+    timeout: float | None = None,
+) -> IdentityUser | None:
+    req = identity_pb2.FindProviderByPhoneRequest(phone=phone)
+    resp = await stub.FindProviderByPhone(req, metadata=metadata, timeout=timeout)
+    if not resp or not resp.HasField("user"):
+        return None
+    return _to_user(resp.user)
+
+
 async def get_profile(
     stub: identity_pb2_grpc.IdentityServiceStub,
     *,

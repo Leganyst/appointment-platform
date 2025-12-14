@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -39,6 +41,12 @@ class SlotDTO:
     starts_at: datetime
     ends_at: datetime
     status: str
+
+
+@dataclass
+class ProviderSlotDTO:
+    slot: SlotDTO
+    booking: Optional[BookingDTO]
 
 
 @dataclass

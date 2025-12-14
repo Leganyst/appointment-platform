@@ -5,39 +5,46 @@ from aiogram import Dispatcher
 
 from telegram_bot.bot import create_bot, create_dispatcher
 from telegram_bot.config import Settings
-from telegram_bot.db import make_engine, make_session_factory
 from telegram_bot.handlers import router as handlers_router
+from telegram_bot.services.grpc_clients import GrpcClients
 
 
-def setup_logging(level: str) -> None:
+def setup_logging(level):
     logging.basicConfig(
         level=level.upper(),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
 
-def setup_dispatcher(session_factory) -> Dispatcher:
+def setup_dispatcher(session_factory):
     dispatcher = create_dispatcher()
     dispatcher.include_router(handlers_router)
     dispatcher.workflow_data["session_factory"] = session_factory
     return dispatcher
 
 
-async def main() -> None:
+async def main():
     settings = Settings()
     setup_logging(settings.log_level)
 
-    engine = make_engine(settings.database_url)
-    session_factory = make_session_factory(engine)
+    clients = GrpcClients(
+        identity_endpoint=settings.identity_endpoint,
+        calendar_endpoint=settings.calendar_endpoint,
+        deadline=settings.grpc_deadline_sec,
+        use_tls=settings.grpc_tls,
+        root_cert=settings.grpc_root_cert or None,
+    )
 
     bot = create_bot(settings.bot_token)
-    dispatcher = setup_dispatcher(session_factory)
+    dispatcher = setup_dispatcher(None)
+    dispatcher.workflow_data["settings"] = settings
+    dispatcher.workflow_data["grpc_clients"] = clients
 
     try:
         await dispatcher.start_polling(bot)
     finally:
         await bot.session.close()
-        await engine.dispose()
+        await clients.close()
 
 
 if __name__ == "__main__":

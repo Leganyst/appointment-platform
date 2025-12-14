@@ -1,23 +1,21 @@
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import contextmanager
 
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-
-
-def make_engine(database_url: str) -> AsyncEngine:
-    return create_async_engine(database_url, echo=False, pool_pre_ping=True)
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
-def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(engine, expire_on_commit=False)
+def make_engine(database_url):
+    return create_engine(database_url, echo=False, pool_pre_ping=True, future=True)
 
 
-@asynccontextmanager
-async def get_async_session(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> AsyncIterator[AsyncSession]:
+def make_session_factory(engine):
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+@contextmanager
+def get_session(session_factory):
     session = session_factory()
     try:
         yield session
     finally:
-        await session.close()
+        session.close()

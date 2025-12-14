@@ -242,6 +242,50 @@ message ValidateSlotResponse {
   common.v1.Slot slot = 3;
 }
 
+// ==== Быстрые предикаты для бота ====
+
+// Ближайший свободный слот от заданного времени (или "сейчас").
+message GetNearestFreeSlotRequest {
+  // Опционально: ограничить провайдером.
+  string provider_id = 1;
+  // Опционально: ограничить услугой.
+  string service_id = 2;
+  // Время отсчёта (UTC). Если не задано — берём текущее время.
+  google.protobuf.Timestamp from = 3;
+  // Опционально: максимальная дата поиска, чтобы не сканировать бесконечность.
+  google.protobuf.Timestamp until = 4;
+}
+
+message GetNearestFreeSlotResponse {
+  common.v1.Slot slot = 1;
+}
+
+// Следующий слот конкретного провайдера от заданного времени.
+message GetNextProviderSlotRequest {
+  string provider_id = 1;
+  string service_id  = 2;
+  google.protobuf.Timestamp from = 3;
+  google.protobuf.Timestamp until = 4;
+}
+
+message GetNextProviderSlotResponse {
+  common.v1.Slot slot = 1;
+}
+
+// Небольшая выборка свободных слотов в окне без пагинации (для быстрых подсказок бота).
+message FindFreeSlotsRequest {
+  string provider_id = 1;
+  string service_id  = 2;
+  google.protobuf.Timestamp start = 3;
+  google.protobuf.Timestamp end   = 4;
+  // Сколько вернуть слотов (по умолчанию 5).
+  int32 limit = 5;
+}
+
+message FindFreeSlotsResponse {
+  repeated common.v1.Slot slots = 1;
+}
+
 // ==== Сервис календаря ====
 
 // Основной gRPC-сервис календарного ядра.
@@ -272,6 +316,13 @@ service CalendarService {
 
   // Валидация слота.
   rpc ValidateSlot (ValidateSlotRequest) returns (ValidateSlotResponse);
+
+  // Быстрые предикаты для бота.
+  rpc GetNearestFreeSlot (GetNearestFreeSlotRequest) returns (GetNearestFreeSlotResponse);
+  // Следующий свободный слот заданного провайдера от времени from (ограниченный until).
+  rpc GetNextProviderSlot (GetNextProviderSlotRequest) returns (GetNextProviderSlotResponse);
+  // Маленькая выдача свободных слотов в интервале без пагинации (для быстрых подсказок).
+  rpc FindFreeSlots (FindFreeSlotsRequest) returns (FindFreeSlotsResponse);
 
   // Список бронирований клиента за период.
   rpc ListBookings (ListBookingsRequest) returns (ListBookingsResponse);

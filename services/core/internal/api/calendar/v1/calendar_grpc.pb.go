@@ -36,6 +36,10 @@ type CalendarServiceClient interface {
 	ExpandSchedule(ctx context.Context, in *ExpandScheduleRequest, opts ...grpc.CallOption) (*ExpandScheduleResponse, error)
 	// Валидация слота.
 	ValidateSlot(ctx context.Context, in *ValidateSlotRequest, opts ...grpc.CallOption) (*ValidateSlotResponse, error)
+	// Быстрые предикаты для бота.
+	GetNearestFreeSlot(ctx context.Context, in *GetNearestFreeSlotRequest, opts ...grpc.CallOption) (*GetNearestFreeSlotResponse, error)
+	GetNextProviderSlot(ctx context.Context, in *GetNextProviderSlotRequest, opts ...grpc.CallOption) (*GetNextProviderSlotResponse, error)
+	FindFreeSlots(ctx context.Context, in *FindFreeSlotsRequest, opts ...grpc.CallOption) (*FindFreeSlotsResponse, error)
 	// Список бронирований клиента за период.
 	ListBookings(ctx context.Context, in *ListBookingsRequest, opts ...grpc.CallOption) (*ListBookingsResponse, error)
 	// Получение расписаний провайдера (повторяющиеся правила).
@@ -143,6 +147,33 @@ func (c *calendarServiceClient) ExpandSchedule(ctx context.Context, in *ExpandSc
 func (c *calendarServiceClient) ValidateSlot(ctx context.Context, in *ValidateSlotRequest, opts ...grpc.CallOption) (*ValidateSlotResponse, error) {
 	out := new(ValidateSlotResponse)
 	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/ValidateSlot", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *calendarServiceClient) GetNearestFreeSlot(ctx context.Context, in *GetNearestFreeSlotRequest, opts ...grpc.CallOption) (*GetNearestFreeSlotResponse, error) {
+	out := new(GetNearestFreeSlotResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/GetNearestFreeSlot", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *calendarServiceClient) GetNextProviderSlot(ctx context.Context, in *GetNextProviderSlotRequest, opts ...grpc.CallOption) (*GetNextProviderSlotResponse, error) {
+	out := new(GetNextProviderSlotResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/GetNextProviderSlot", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *calendarServiceClient) FindFreeSlots(ctx context.Context, in *FindFreeSlotsRequest, opts ...grpc.CallOption) (*FindFreeSlotsResponse, error) {
+	out := new(FindFreeSlotsResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/FindFreeSlots", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +301,10 @@ type CalendarServiceServer interface {
 	ExpandSchedule(context.Context, *ExpandScheduleRequest) (*ExpandScheduleResponse, error)
 	// Валидация слота.
 	ValidateSlot(context.Context, *ValidateSlotRequest) (*ValidateSlotResponse, error)
+	// Быстрые предикаты для бота.
+	GetNearestFreeSlot(context.Context, *GetNearestFreeSlotRequest) (*GetNearestFreeSlotResponse, error)
+	GetNextProviderSlot(context.Context, *GetNextProviderSlotRequest) (*GetNextProviderSlotResponse, error)
+	FindFreeSlots(context.Context, *FindFreeSlotsRequest) (*FindFreeSlotsResponse, error)
 	// Список бронирований клиента за период.
 	ListBookings(context.Context, *ListBookingsRequest) (*ListBookingsResponse, error)
 	// Получение расписаний провайдера (повторяющиеся правила).
@@ -325,6 +360,15 @@ func (UnimplementedCalendarServiceServer) ExpandSchedule(context.Context, *Expan
 }
 func (UnimplementedCalendarServiceServer) ValidateSlot(context.Context, *ValidateSlotRequest) (*ValidateSlotResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ValidateSlot not implemented")
+}
+func (UnimplementedCalendarServiceServer) GetNearestFreeSlot(context.Context, *GetNearestFreeSlotRequest) (*GetNearestFreeSlotResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNearestFreeSlot not implemented")
+}
+func (UnimplementedCalendarServiceServer) GetNextProviderSlot(context.Context, *GetNextProviderSlotRequest) (*GetNextProviderSlotResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNextProviderSlot not implemented")
+}
+func (UnimplementedCalendarServiceServer) FindFreeSlots(context.Context, *FindFreeSlotsRequest) (*FindFreeSlotsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FindFreeSlots not implemented")
 }
 func (UnimplementedCalendarServiceServer) ListBookings(context.Context, *ListBookingsRequest) (*ListBookingsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListBookings not implemented")
@@ -530,6 +574,60 @@ func _CalendarService_ValidateSlot_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CalendarServiceServer).ValidateSlot(ctx, req.(*ValidateSlotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CalendarService_GetNearestFreeSlot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNearestFreeSlotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).GetNearestFreeSlot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/GetNearestFreeSlot",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).GetNearestFreeSlot(ctx, req.(*GetNearestFreeSlotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CalendarService_GetNextProviderSlot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNextProviderSlotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).GetNextProviderSlot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/GetNextProviderSlot",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).GetNextProviderSlot(ctx, req.(*GetNextProviderSlotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CalendarService_FindFreeSlots_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FindFreeSlotsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).FindFreeSlots(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/FindFreeSlots",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).FindFreeSlots(ctx, req.(*FindFreeSlotsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -774,6 +872,18 @@ var CalendarService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ValidateSlot",
 			Handler:    _CalendarService_ValidateSlot_Handler,
+		},
+		{
+			MethodName: "GetNearestFreeSlot",
+			Handler:    _CalendarService_GetNearestFreeSlot_Handler,
+		},
+		{
+			MethodName: "GetNextProviderSlot",
+			Handler:    _CalendarService_GetNextProviderSlot_Handler,
+		},
+		{
+			MethodName: "FindFreeSlots",
+			Handler:    _CalendarService_FindFreeSlots_Handler,
 		},
 		{
 			MethodName: "ListBookings",

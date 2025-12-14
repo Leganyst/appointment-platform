@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package common.v1;
+
+option go_package = "github.com/Leganyst/appointment-platform/internal/api/common/v1;commonpb";
+
+import "google/protobuf/timestamp.proto";
+
+// Временной интервал [start, end).
+message TimeRange {
+  google.protobuf.Timestamp start = 1;
+  google.protobuf.Timestamp end   = 2;
+}
+
+// Статус слота.
+enum SlotStatus {
+  SLOT_STATUS_UNSPECIFIED = 0;
+  SLOT_STATUS_FREE        = 1;
+  SLOT_STATUS_BOOKED      = 2;
+  SLOT_STATUS_CANCELLED   = 3;
+}
+
+// Статус бронирования.
+enum BookingStatus {
+  BOOKING_STATUS_UNSPECIFIED = 0;
+  BOOKING_STATUS_PENDING     = 1;
+  BOOKING_STATUS_CONFIRMED   = 2;
+  BOOKING_STATUS_CANCELLED   = 3;
+}
+
+// Тип повторения.
+enum RecurrenceFrequency {
+  RECURRENCE_FREQUENCY_UNSPECIFIED = 0;
+  RECURRENCE_FREQUENCY_DAILY       = 1;
+  RECURRENCE_FREQUENCY_WEEKLY      = 2;
+}
+
+// Представитель услуг (мастер, консультант и т.п.).
+message Provider {
+  string id           = 1;
+  string display_name = 2;
+  string description  = 3;
+}
+
+// Услуга (тип записи).
+message Service {
+  string id                   = 1;
+  string name                 = 2;
+  string description          = 3;
+  int32  default_duration_min = 4; // может быть 0, если не задано
+  bool   is_active            = 5;
+}
+
+// Свободный/занятый слот расписания.
+message Slot {
+  string id          = 1;
+  string provider_id = 2;
+  string service_id  = 3;
+
+  google.protobuf.Timestamp starts_at = 4;
+  google.protobuf.Timestamp ends_at   = 5;
+
+  SlotStatus status = 6;
+}
+
+// Бронирование слота.
+message Booking {
+  string id        = 1;
+  string client_id = 2;
+  string slot_id   = 3;
+  string provider_id = 4;
+  string provider_name = 5;
+  string service_id = 6;
+  string service_name = 7;
+  BookingStatus status = 8;
+
+  google.protobuf.Timestamp created_at   = 9;
+  google.protobuf.Timestamp cancelled_at = 10;
+  string                     comment     = 11;
+}
+
+// Правило повторяющегося расписания (упрощённое).
+message ScheduleRule {
+  RecurrenceFrequency frequency    = 1; // daily / weekly
+  int32               interval     = 2; // шаг: каждые N дней/недель (>=1)
+  repeated int32      weekdays     = 3; // для weekly: дни недели 1–7
+
+  google.protobuf.Timestamp starts_at    = 4; // время начала слота в дне
+  int32                     duration_min = 5;
+
+  google.protobuf.Timestamp until = 6;
+  int32                     count = 7;
+
+  // Список дат-исключений (используется только дата, время игнорируется).
+  // Если дата присутствует в списке, повторение на эту дату не создаётся.
+  repeated google.protobuf.Timestamp exceptions = 8;
+}
+
+// Расписание провайдера, заданное правилом повторения.
+message ProviderSchedule {
+  string id          = 1;
+  string provider_id = 2;
+  string time_zone   = 3;
+
+  google.protobuf.Timestamp start_date = 4;
+  google.protobuf.Timestamp end_date   = 5;
+
+  ScheduleRule rule = 6;
+}

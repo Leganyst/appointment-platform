@@ -1,0 +1,355 @@
+syntax = "proto3";
+
+package calendar.v1;
+
+option go_package = "github.com/Leganyst/appointment-platform/internal/api/calendar/v1;calendarpb";
+
+import "google/protobuf/timestamp.proto";
+import "internal/api/common/v1/common.proto";
+
+// ==== Запросы/ответы: слоты ====
+
+// Запрос свободных слотов в указанном интервале.
+message ListFreeSlotsRequest {
+  string provider_id = 1;
+  string service_id  = 2;
+
+  google.protobuf.Timestamp start = 3;
+  google.protobuf.Timestamp end   = 4;
+
+  int32 page      = 5; // номер страницы, начиная с 1
+  int32 page_size = 6; // размер страницы
+}
+
+message ListFreeSlotsResponse {
+  repeated common.v1.Slot slots       = 1;
+  int32                total_count = 2;
+}
+
+// ==== Алиасы обязательного минимума ТЗ ====
+// В ТЗ метод называется GetAvailableSlots.
+// Чтобы не ломать текущих клиентов, оставляем ListFreeSlots и добавляем alias.
+
+// ==== Запросы/ответы: бронирование ====
+
+// Создание бронирования.
+message CreateBookingRequest {
+  string client_id = 1;
+  string slot_id   = 2;
+  string comment   = 3;
+}
+
+message CreateBookingResponse {
+  common.v1.Booking booking = 1;
+}
+
+// Получение информации о бронировании.
+message GetBookingRequest {
+  string booking_id = 1;
+}
+
+message GetBookingResponse {
+  common.v1.Booking booking = 1;
+}
+
+// Отмена бронирования.
+message CancelBookingRequest {
+  string booking_id = 1;
+  string reason     = 2;
+}
+
+message CancelBookingResponse {
+  common.v1.Booking booking = 1;
+}
+
+// Список бронирований клиента за период.
+message ListBookingsRequest {
+  string client_id = 1;
+
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to   = 3;
+
+  int32 page      = 4;
+  int32 page_size = 5;
+}
+
+message ListBookingsResponse {
+  repeated common.v1.Booking bookings   = 1;
+  int32                 total_count = 2;
+}
+
+// ==== Запросы/ответы: расписания провайдера ====
+
+// Получение расписаний провайдера.
+message ListProviderSchedulesRequest {
+  string provider_id = 1;
+}
+
+message ListProviderSchedulesResponse {
+  repeated common.v1.ProviderSchedule schedules = 1;
+}
+
+// Создание расписания провайдера (правило повторения).
+message CreateProviderScheduleRequest {
+  string provider_id = 1;
+  common.v1.ProviderSchedule schedule = 2; // rule, timezone, dates
+}
+
+message CreateProviderScheduleResponse {
+  common.v1.ProviderSchedule schedule = 1;
+}
+
+// Обновление расписания.
+message UpdateProviderScheduleRequest {
+  string schedule_id = 1;
+  common.v1.ProviderSchedule schedule = 2; // новые значения
+}
+
+message UpdateProviderScheduleResponse {
+  common.v1.ProviderSchedule schedule = 1;
+}
+
+// Удаление расписания.
+message DeleteProviderScheduleRequest {
+  string schedule_id = 1;
+}
+
+message DeleteProviderScheduleResponse {}
+
+// ==== Массовая отмена слотов провайдера (для уведомлений) ====
+
+// Бронирование, затронутое массовой отменой.
+// Возвращается, чтобы внешний слой (например, бот) мог уведомить записанных клиентов.
+message AffectedBooking {
+  string booking_id = 1;
+  string slot_id = 2;
+
+  string client_id = 3;
+  string client_user_id = 4;
+  int64 client_telegram_id = 5;
+
+  string provider_id = 6;
+  string service_id = 7; // может быть пустым
+
+  google.protobuf.Timestamp starts_at = 8;
+  google.protobuf.Timestamp ends_at = 9;
+}
+
+// Отменить слоты провайдера в интервале. Если на слот есть бронирование — оно будет отменено.
+message BulkCancelProviderSlotsRequest {
+  string provider_id = 1;
+  google.protobuf.Timestamp start = 2;
+  google.protobuf.Timestamp end = 3;
+  string reason = 4;
+}
+
+message BulkCancelProviderSlotsResponse {
+  int32 cancelled_slots = 1;
+  int32 cancelled_bookings = 2;
+  repeated AffectedBooking affected_bookings = 3;
+}
+
+// ==== Запросы/ответы: CRUD слотов ====
+
+message CreateSlotRequest {
+  string provider_id = 1;
+  string service_id = 2;
+  common.v1.TimeRange range = 3;
+}
+
+message CreateSlotResponse {
+  common.v1.Slot slot = 1;
+}
+
+message UpdateSlotRequest {
+  string slot_id = 1;
+  string service_id = 2;
+  common.v1.TimeRange range = 3;
+  common.v1.SlotStatus status = 4;
+}
+
+message UpdateSlotResponse {
+  common.v1.Slot slot = 1;
+}
+
+message DeleteSlotRequest {
+  string slot_id = 1;
+}
+
+message DeleteSlotResponse {}
+
+// ==== Публичный каталог услуг и профиль провайдера ====
+
+// Список услуг (публичный каталог).
+message ListServicesRequest {
+  bool only_active = 1; // по умолчанию true
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListServicesResponse {
+  repeated common.v1.Service services = 1;
+  int32 total_count = 2;
+}
+
+// Список услуг конкретного провайдера.
+message ListProviderServicesRequest {
+  string provider_id = 1;
+}
+
+message ListProviderServicesResponse {
+  common.v1.Provider provider = 1;
+  repeated common.v1.Service services = 2;
+}
+
+// ==== Обязательный минимум ТЗ: CheckAvailability / ExpandSchedule / ValidateSlot ====
+
+// Проверка доступности слота для бронирования (включая конфликты клиента по времени).
+message CheckAvailabilityRequest {
+  string client_id = 1;
+  string slot_id   = 2;
+}
+
+message CheckAvailabilityResponse {
+  bool available = 1;
+  string reason  = 2;
+}
+
+// Развёртывание расписания в набор интервалов в окне.
+message ExpandScheduleRequest {
+  string schedule_id = 1;
+  google.protobuf.Timestamp window_start = 2;
+  google.protobuf.Timestamp window_end   = 3;
+}
+
+message ExpandScheduleResponse {
+  repeated common.v1.TimeRange intervals = 1;
+}
+
+// Валидация слота (существование + статус + базовая корректность дат).
+message ValidateSlotRequest {
+  string slot_id = 1;
+
+  // Опционально: проверка принадлежности слота провайдеру.
+  string provider_id = 2;
+  // Опционально: проверка соответствия услуги.
+  string service_id  = 3;
+}
+
+message ValidateSlotResponse {
+  bool valid = 1;
+  string reason = 2;
+  common.v1.Slot slot = 3;
+}
+
+// ==== Быстрые предикаты для бота ====
+
+// Ближайший свободный слот от заданного времени (или "сейчас").
+message GetNearestFreeSlotRequest {
+  // Опционально: ограничить провайдером.
+  string provider_id = 1;
+  // Опционально: ограничить услугой.
+  string service_id = 2;
+  // Время отсчёта (UTC). Если не задано — берём текущее время.
+  google.protobuf.Timestamp from = 3;
+  // Опционально: максимальная дата поиска, чтобы не сканировать бесконечность.
+  google.protobuf.Timestamp until = 4;
+}
+
+message GetNearestFreeSlotResponse {
+  common.v1.Slot slot = 1;
+}
+
+// Следующий слот конкретного провайдера от заданного времени.
+message GetNextProviderSlotRequest {
+  string provider_id = 1;
+  string service_id  = 2;
+  google.protobuf.Timestamp from = 3;
+  google.protobuf.Timestamp until = 4;
+}
+
+message GetNextProviderSlotResponse {
+  common.v1.Slot slot = 1;
+}
+
+// Небольшая выборка свободных слотов в окне без пагинации (для быстрых подсказок бота).
+message FindFreeSlotsRequest {
+  string provider_id = 1;
+  string service_id  = 2;
+  google.protobuf.Timestamp start = 3;
+  google.protobuf.Timestamp end   = 4;
+  // Сколько вернуть слотов (по умолчанию 5).
+  int32 limit = 5;
+}
+
+message FindFreeSlotsResponse {
+  repeated common.v1.Slot slots = 1;
+}
+
+// ==== Сервис календаря ====
+
+// Основной gRPC-сервис календарного ядра.
+service CalendarService {
+  // Получение свободных слотов в указанном интервале.
+  rpc ListFreeSlots (ListFreeSlotsRequest) returns (ListFreeSlotsResponse);
+
+  // Алиас под ТЗ: GetAvailableSlots.
+  rpc GetAvailableSlots (ListFreeSlotsRequest) returns (ListFreeSlotsResponse);
+
+  // Создание бронирования на свободный слот.
+  rpc CreateBooking (CreateBookingRequest) returns (CreateBookingResponse);
+
+  // Алиас под ТЗ: BookSlot.
+  rpc BookSlot (CreateBookingRequest) returns (CreateBookingResponse);
+
+  // Получение информации о бронировании.
+  rpc GetBooking (GetBookingRequest) returns (GetBookingResponse);
+
+  // Отмена ранее созданного бронирования.
+  rpc CancelBooking (CancelBookingRequest) returns (CancelBookingResponse);
+
+  // Проверка доступности слота.
+  rpc CheckAvailability (CheckAvailabilityRequest) returns (CheckAvailabilityResponse);
+
+  // Развёртывание расписания в окне.
+  rpc ExpandSchedule (ExpandScheduleRequest) returns (ExpandScheduleResponse);
+
+  // Валидация слота.
+  rpc ValidateSlot (ValidateSlotRequest) returns (ValidateSlotResponse);
+
+  // Быстрые предикаты для бота.
+  rpc GetNearestFreeSlot (GetNearestFreeSlotRequest) returns (GetNearestFreeSlotResponse);
+  // Следующий свободный слот заданного провайдера от времени from (ограниченный until).
+  rpc GetNextProviderSlot (GetNextProviderSlotRequest) returns (GetNextProviderSlotResponse);
+  // Маленькая выдача свободных слотов в интервале без пагинации (для быстрых подсказок).
+  rpc FindFreeSlots (FindFreeSlotsRequest) returns (FindFreeSlotsResponse);
+
+  // Список бронирований клиента за период.
+  rpc ListBookings (ListBookingsRequest) returns (ListBookingsResponse);
+
+  // Получение расписаний провайдера (повторяющиеся правила).
+  rpc ListProviderSchedules (ListProviderSchedulesRequest) returns (ListProviderSchedulesResponse);
+
+  // CRUD расписаний провайдера.
+  rpc CreateProviderSchedule (CreateProviderScheduleRequest) returns (CreateProviderScheduleResponse);
+  // Обновление расписания провайдера по ID.
+  rpc UpdateProviderSchedule (UpdateProviderScheduleRequest) returns (UpdateProviderScheduleResponse);
+  // Удаление расписания провайдера по ID.
+  rpc DeleteProviderSchedule (DeleteProviderScheduleRequest) returns (DeleteProviderScheduleResponse);
+
+  // Массовая отмена слотов провайдера в интервале (возвращает список затронутых бронирований).
+  rpc BulkCancelProviderSlots (BulkCancelProviderSlotsRequest) returns (BulkCancelProviderSlotsResponse);
+
+  // CRUD слотов.
+  rpc CreateSlot (CreateSlotRequest) returns (CreateSlotResponse);
+  // Обновление слота по ID.
+  rpc UpdateSlot (UpdateSlotRequest) returns (UpdateSlotResponse);
+  // Удаление слота по ID.
+  rpc DeleteSlot (DeleteSlotRequest) returns (DeleteSlotResponse);
+
+  // Публичный каталог услуг.
+  rpc ListServices (ListServicesRequest) returns (ListServicesResponse);
+
+  // Публичный профиль провайдера + его услуги.
+  rpc ListProviderServices (ListProviderServicesRequest) returns (ListProviderServicesResponse);
+}

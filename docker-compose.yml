@@ -38,6 +38,19 @@ services:
     networks:
       - core-net
 
+  bot:
+    build:
+      context: ./app/telegram_bot
+      dockerfile: Dockerfile
+    container_name: appointment-bot
+    env_file:
+      - ./app/telegram_bot/.env
+    depends_on:
+      core:
+        condition: service_started
+    networks:
+      - core-net
+
 networks:
   core-net:
 

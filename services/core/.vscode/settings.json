@@ -1,0 +1,12 @@
+{
+  // Tell VS Code protobuf extension where to resolve imports.
+  "proto3.importPaths": [
+    "${workspaceFolder}/internal/api",
+    "${workspaceFolder}"
+  ],
+  // Some proto extensions use this key instead.
+  "protoc.includePaths": [
+    "${workspaceFolder}/internal/api",
+    "${workspaceFolder}"
+  ]
+}

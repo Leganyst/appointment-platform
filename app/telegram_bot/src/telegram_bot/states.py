@@ -32,6 +32,12 @@ class ProviderStates(StatesGroup):
     slot_create_time = State()     # P4.1
     slot_create_duration = State() # P4.2
     slot_create = State()         # P4.3 confirm
+    week_create_service = State()   # P4w.0
+    week_create_week = State()      # P4w.1
+    week_create_times = State()     # P4w.2
+    week_create_duration = State()  # P4w.3
+    week_create_days = State()      # P4w.4
+    week_create_confirm = State()   # P4w.5
     slot_edit = State()           # P5
     slot_delete = State()         # P6
     booking_list = State()        # P7

@@ -171,6 +171,7 @@ def provider_schedule_keyboard(page: int, has_prev: bool, has_next: bool):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Добавить слот", callback_data="provider:slot:add")],
+            [InlineKeyboardButton(text="Добавить неделю слотов", callback_data="provider:slot:add_week")],
             nav_row,
             [InlineKeyboardButton(text="Обновить список", callback_data="provider:slot:refresh")],
             [InlineKeyboardButton(text="В главное меню", callback_data="provider:menu")],
@@ -193,6 +194,40 @@ def provider_add_slot_confirm(slot_repr: str):
         inline_keyboard=[
             [InlineKeyboardButton(text="Подтвердить", callback_data="provider:slot:create:confirm")],
             [InlineKeyboardButton(text="Отменить", callback_data="provider:slot:create:cancel")],
+        ]
+    )
+
+
+def provider_week_days_keyboard(selected: set[int]):
+    labels = [
+        (0, "Пн"),
+        (1, "Вт"),
+        (2, "Ср"),
+        (3, "Чт"),
+        (4, "Пт"),
+        (5, "Сб"),
+        (6, "Вс"),
+    ]
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for idx, title in labels:
+        mark = "✅" if idx in selected else "▫️"
+        row.append(InlineKeyboardButton(text=f"{mark} {title}", callback_data=f"week:day:{idx}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="Готово", callback_data="week:day:done")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data="week:day:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def provider_week_confirm_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Создать неделю слотов", callback_data="week:create:confirm")],
+            [InlineKeyboardButton(text="Отмена", callback_data="week:create:cancel")],
         ]
     )
 

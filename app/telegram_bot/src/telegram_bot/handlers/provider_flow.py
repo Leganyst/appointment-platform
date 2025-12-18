@@ -14,6 +14,8 @@ from telegram_bot.keyboards import (
     provider_schedule_keyboard,
     provider_service_select_keyboard,
     provider_slots_actions,
+    provider_week_confirm_keyboard,
+    provider_week_days_keyboard,
 )
 from telegram_bot.services import calendar as cal_svc
 from telegram_bot.services.errors import user_friendly_error
@@ -35,6 +37,8 @@ BOOKING_STATUS_MAP = {
     "BOOKING_STATUS_CONFIRMED": "Подтверждена",
     "BOOKING_STATUS_CANCELLED": "Отменена",
 }
+
+WEEKDAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
 def _is_active_booking(status: str) -> bool:
@@ -126,6 +130,26 @@ def _parse_time_with_offset(text: str, default_offset_min: int = 0):
     return time_obj, offset_min
 
 
+def _parse_time_list(text: str):
+    raw = (text or "").replace(";", ",")
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    times = []
+    for part in parts:
+        t = _parse_time_input(part)
+        if not t:
+            return None
+        times.append(t)
+    return times if times else None
+
+
+def _week_range_from_date(date_obj):
+    # Monday-based week start
+    weekday = date_obj.weekday()  # Monday=0
+    monday = date_obj - timedelta(days=weekday)
+    sunday = monday + timedelta(days=6)
+    return monday, sunday
+
+
 def _fmt_slots(slots, tz_offset_min: int = 180):
     if not slots:
         return "Слотов нет."
@@ -155,6 +179,17 @@ def _fmt_slots(slots, tz_offset_min: int = 180):
         line = f"• {dt_label} — {booking_note or slot_status or 'свободно'}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _fmt_weekday_set(days: set[int]) -> str:
+    if not days:
+        return "не выбрано"
+    ordered = [d for d in range(7) if d in days]
+    return ", ".join(WEEKDAY_NAMES[d] for d in ordered)
+
+
+def _fmt_times_list(times: list[str]) -> str:
+    return ", ".join(times) if times else "—"
 
 
 async def _clear_prev_prompt(message: Message, state: FSMContext):
@@ -426,6 +461,325 @@ async def provider_profile(message: Message, state: FSMContext):
         "Сменить роль: /start → Выбор роли."
     )
     await message.answer(text, reply_markup=provider_main_menu_keyboard())
+
+
+# ===== Недельное создание слотов =====
+
+
+@router.callback_query(F.data == "provider:slot:add_week")
+async def start_add_week(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    provider_id = data.get("provider_id")
+    if not provider_id:
+        await callback.message.edit_text("Нет provider_id, выберите роль представителя /start")
+        await callback.answer()
+        return
+
+    settings = callback.message.bot.dispatcher.workflow_data.get("settings")
+    clients: GrpcClients = callback.message.bot.dispatcher.workflow_data.get("grpc_clients")
+    corr_id = new_corr_id()
+    logger.info("provider_flow.start_add_week: user=%s corr_id=%s", callback.from_user.id, corr_id)
+    try:
+        _, services = await cal_svc.list_provider_services(
+            clients.calendar_stub(),
+            provider_id=provider_id,
+            metadata=build_metadata(corr_id),
+            timeout=settings.grpc_deadline_sec,
+        )
+    except grpc.aio.AioRpcError as exc:
+        logger.exception("provider_flow.start_add_week: list_services failed corr_id=%s", corr_id)
+        await callback.message.edit_text(user_friendly_error(exc))
+        await callback.answer()
+        return
+
+    if not services:
+        await callback.message.edit_text(
+            "Для вашего профиля пока нет услуг. Добавьте услугу и повторите."
+        )
+        await callback.message.answer("Главное меню представителя:", reply_markup=provider_main_menu_keyboard())
+        await callback.answer()
+        return
+
+    await state.update_data(
+        pending_week=None,
+        week_services=[{"id": s.id, "name": s.name, "duration": s.default_duration_min} for s in services],
+    )
+    await state.set_state(ProviderStates.week_create_service)
+    await _clear_prev_prompt(callback.message, state)
+    prompt = await callback.message.answer(
+        "Шаг 1/5. Выберите услугу для недели слотов:",
+        reply_markup=provider_service_select_keyboard(services),
+    )
+    await _remember_prompt(prompt, state)
+    await callback.answer()
+
+
+@router.callback_query(ProviderStates.week_create_service, F.data.startswith("provider:slot:service:"))
+async def on_week_service_chosen(callback: CallbackQuery, state: FSMContext):
+    _, _, _, service_id = callback.data.split(":")
+    data = await state.get_data()
+    services_cache = data.get("week_services") or []
+    service_name = next((s.get("name") for s in services_cache if s.get("id") == service_id), "")
+    default_duration = next((s.get("duration") for s in services_cache if s.get("id") == service_id), 60)
+    await state.update_data(
+        pending_week={
+            "service_id": service_id,
+            "service_name": service_name or "услуга",
+            "default_duration": default_duration,
+        }
+    )
+    await state.set_state(ProviderStates.week_create_week)
+    await _clear_prev_prompt(callback.message, state)
+    prompt = await callback.message.answer(
+        "Шаг 2/5. Выбор недели.\n"
+        "Напишите дату любого дня нужной недели (пример: 20.12 или 2025-12-20).\n"
+        "Мы возьмём неделю Пн–Вс, начиная с ближайшего понедельника к этой дате."
+    )
+    await _remember_prompt(prompt, state)
+    await callback.answer()
+
+
+@router.message(ProviderStates.week_create_week)
+async def handle_week_start(message: Message, state: FSMContext):
+    text = (message.text or "").strip().lower()
+    today = datetime.utcnow().date()
+    if text in {"", "сегодня", "today"}:
+        date_obj = today
+    else:
+        date_obj = _parse_date_input(text)
+        if not date_obj:
+            await message.answer("Не понял дату. Примеры: сегодня, 20.12, 2025-12-20")
+            return
+    week_start, week_end = _week_range_from_date(date_obj)
+    data = await state.get_data()
+    pending = data.get("pending_week") or {}
+    pending.update({"week_start": week_start.isoformat(), "week_end": week_end.isoformat()})
+    await state.update_data(pending_week=pending)
+    await state.set_state(ProviderStates.week_create_times)
+    await _clear_prev_prompt(message, state)
+    prompt = await message.answer(
+        "Шаг 3/5. Во сколько принимаете?\n"
+        "Напишите времена через запятую: 10:00, 14:30\n"
+        "Часовой пояс: МСК (UTC+03) по умолчанию."
+    )
+    await _remember_prompt(prompt, state)
+
+
+@router.message(ProviderStates.week_create_times)
+async def handle_week_times(message: Message, state: FSMContext):
+    times = _parse_time_list(message.text)
+    if not times:
+        await message.answer("Не понял время. Пример: 10:00, 14:30")
+        return
+    if len(times) > 10:
+        await message.answer("Слишком много времён. Максимум 10 за раз.")
+        return
+
+    data = await state.get_data()
+    pending = data.get("pending_week") or {}
+    pending.update({"times": [t.strftime("%H:%M") for t in times]})
+    await state.update_data(pending_week=pending)
+    await state.set_state(ProviderStates.week_create_duration)
+    suggested = pending.get("default_duration") or 60
+    await _clear_prev_prompt(message, state)
+    prompt = await message.answer(
+        "Шаг 4/5. Длительность приёма в минутах (10–480).\n"
+        f"Например: {suggested}"
+    )
+    await _remember_prompt(prompt, state)
+
+
+@router.message(ProviderStates.week_create_duration)
+async def handle_week_duration(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    try:
+        duration = int(text)
+    except ValueError:
+        await message.answer("Длительность должна быть числом. Пример: 60")
+        return
+    if duration < 10 or duration > 480:
+        await message.answer("Укажите длительность от 10 до 480 минут")
+        return
+
+    data = await state.get_data()
+    pending = data.get("pending_week") or {}
+    pending.update({"duration": duration})
+    # По умолчанию выбираем все дни недели
+    await state.update_data(pending_week=pending, week_days=list(range(7)))
+    await state.set_state(ProviderStates.week_create_days)
+    await _clear_prev_prompt(message, state)
+    text_summary = (
+        "Шаг 5/5. Выберите дни недели, для которых создадим слоты.\n"
+        "Нажмите на дни, чтобы отключить/включить."
+    )
+    prompt = await message.answer(
+        text_summary,
+        reply_markup=provider_week_days_keyboard(set(range(7))),
+    )
+    await _remember_prompt(prompt, state)
+
+
+@router.callback_query(ProviderStates.week_create_days, F.data.startswith("week:day:"))
+async def handle_week_days(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split(":")[2]
+    data = await state.get_data()
+    selected: set[int] = set(data.get("week_days") or [])
+
+    if action == "done":
+        if not selected:
+            await callback.answer("Выберите хотя бы один день", show_alert=True)
+            return
+        await _show_week_confirm(callback.message, state)
+        await callback.answer()
+        return
+    if action == "cancel":
+        await state.update_data(pending_week=None, week_days=[])
+        await state.set_state(ProviderStates.schedule_dashboard)
+        await callback.message.edit_text("Отменено")
+        await callback.message.answer("Главное меню представителя:", reply_markup=provider_main_menu_keyboard())
+        await callback.answer()
+        return
+
+    try:
+        day_idx = int(action)
+    except ValueError:
+        await callback.answer()
+        return
+
+    if day_idx in selected:
+        selected.remove(day_idx)
+    else:
+        selected.add(day_idx)
+
+    await state.update_data(week_days=selected)
+    await callback.message.edit_reply_markup(reply_markup=provider_week_days_keyboard(selected))
+    await callback.answer()
+
+
+async def _show_week_confirm(message: Message, state: FSMContext):
+    data = await state.get_data()
+    pending = data.get("pending_week") or {}
+    week_days: set[int] = set(data.get("week_days") or [])
+    if not pending or not week_days:
+        await message.answer("Недостаточно данных для создания слотов. Начните заново.")
+        await state.set_state(ProviderStates.schedule_dashboard)
+        return
+
+    week_start = datetime.fromisoformat(pending.get("week_start")).date()
+    week_end = datetime.fromisoformat(pending.get("week_end")).date()
+    times = pending.get("times") or []
+    duration = pending.get("duration")
+    service_name = pending.get("service_name") or "услуга"
+    total_slots = len(times) * len(week_days)
+    text = (
+        "Итог. Создадим слоты на неделю Пн–Вс:\n"
+        f"Неделя: {week_start.strftime('%d.%m')} — {week_end.strftime('%d.%m')}\n"
+        f"Услуга: {service_name}\n"
+        f"Время(а): {_fmt_times_list(times)} (МСК)\n"
+        f"Длительность: {duration} мин\n"
+        f"Дни: {_fmt_weekday_set(week_days)}\n"
+        f"Всего слотов: {total_slots}"
+    )
+    await state.set_state(ProviderStates.week_create_confirm)
+    await message.edit_text(text, reply_markup=provider_week_confirm_keyboard())
+
+
+@router.callback_query(ProviderStates.week_create_confirm, F.data == "week:create:cancel")
+async def cancel_week_create(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(pending_week=None, week_days=set())
+    await state.set_state(ProviderStates.schedule_dashboard)
+    await callback.message.edit_text("Создание недели слотов отменено")
+    await callback.message.answer("Главное меню представителя:", reply_markup=provider_main_menu_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(ProviderStates.week_create_confirm, F.data == "week:create:confirm")
+async def confirm_week_create(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    pending = data.get("pending_week") or {}
+    week_days: set[int] = set(data.get("week_days") or [])
+    provider_id = data.get("provider_id")
+    if not provider_id or not pending or not week_days:
+        await callback.answer("Нет данных для создания", show_alert=True)
+        return
+
+    try:
+        week_start = datetime.fromisoformat(pending.get("week_start")).date()
+    except Exception:
+        await callback.answer("Не удалось прочитать дату недели", show_alert=True)
+        return
+
+    times = pending.get("times") or []
+    duration = int(pending.get("duration") or 0)
+    service_id = pending.get("service_id") or ""
+    service_name = pending.get("service_name") or "услуга"
+    tz_offset = data.get("tz_offset_min", 180)
+    tzinfo_local = timezone(timedelta(minutes=tz_offset))
+
+    settings = callback.message.bot.dispatcher.workflow_data.get("settings")
+    clients: GrpcClients = callback.message.bot.dispatcher.workflow_data.get("grpc_clients")
+    stub = clients.calendar_stub()
+
+    successes = []
+    failures = []
+    max_slots = 40
+    created = 0
+
+    for day_idx in sorted(week_days):
+        day_date = week_start + timedelta(days=day_idx)
+        for t_str in times:
+            if created >= max_slots:
+                failures.append(f"Пропустил {day_date.strftime('%d.%m')} {t_str} (лимит {max_slots})")
+                continue
+            time_obj = _parse_time_input(t_str)
+            if not time_obj:
+                failures.append(f"Не понял время {t_str}")
+                continue
+            start_local = datetime.combine(day_date, time_obj, tzinfo=tzinfo_local)
+            start_dt = start_local.astimezone(timezone.utc)
+            corr_id = new_corr_id()
+            try:
+                slot = await cal_svc.create_slot(
+                    stub,
+                    provider_id=provider_id,
+                    service_id=service_id,
+                    start=start_dt,
+                    duration_min=duration,
+                    metadata=build_metadata(corr_id),
+                    timeout=settings.grpc_deadline_sec,
+                )
+                created += 1
+                local_start = slot.starts_at
+                if local_start and local_start.tzinfo is None:
+                    local_start = local_start.replace(tzinfo=timezone.utc)
+                local_pretty = local_start.astimezone(tzinfo_local).strftime('%d.%m %H:%M') if local_start else f"{day_date.strftime('%d.%m')} {t_str}"
+                successes.append(local_pretty)
+            except grpc.aio.AioRpcError as exc:
+                logger.exception(
+                    "provider_flow.week_create failed: user=%s provider_id=%s service_id=%s corr_id=%s",
+                    callback.from_user.id,
+                    provider_id,
+                    service_id,
+                    corr_id,
+                )
+                failures.append(f"{day_date.strftime('%d.%m')} {t_str}: {exc.code().name}")
+
+    await state.update_data(pending_week=None, week_days=[])
+    await state.set_state(ProviderStates.schedule_dashboard)
+
+    summary_lines = ["Готово. Результат недели слотов:"]
+    if successes:
+        summary_lines.append(f"Создано: {len(successes)}")
+    if failures:
+        summary_lines.append("Не удалось:")
+        summary_lines.extend([f"- {line}" for line in failures[:10]])
+        if len(failures) > 10:
+            summary_lines.append(f"... ещё {len(failures) - 10}")
+    text = "\n".join(summary_lines)
+
+    await callback.message.edit_text(text)
+    await _show_schedule(callback.message, state)
+    await callback.answer("Готово")
 
 
 @router.callback_query(F.data.startswith("provider:slot:add"))

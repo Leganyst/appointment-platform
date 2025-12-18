@@ -9,11 +9,27 @@ def to_datetime(ts: Timestamp | None) -> datetime | None:
     return ts.ToDatetime().replace(tzinfo=timezone.utc)
 
 
-def to_timestamp(dt: datetime | None) -> Timestamp | None:
+def _ensure_datetime(value) -> datetime | None:
+    """Convert a variety of timestamp-like objects to aware datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, Timestamp):
+        return _ensure_datetime(value.ToDatetime())
+    if hasattr(value, "to_pydatetime"):
+        return _ensure_datetime(value.to_pydatetime())
+    if hasattr(value, "to_datetime"):
+        return _ensure_datetime(value.to_datetime())
+    if hasattr(value, "timestamp"):
+        return datetime.fromtimestamp(value.timestamp(), tz=timezone.utc)
+    raise TypeError(f"Unsupported datetime type for to_timestamp: {type(value)!r}")
+
+
+def to_timestamp(dt) -> Timestamp | None:
+    dt = _ensure_datetime(dt)
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
     ts = Timestamp()
     ts.FromDatetime(dt)
     return ts

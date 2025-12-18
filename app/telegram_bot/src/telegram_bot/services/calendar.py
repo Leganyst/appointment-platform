@@ -1,13 +1,18 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
-
-import grpc
+from typing import Optional
 
 from telegram_bot.dto import BookingDTO, ProviderDTO, ProviderSlotDTO, ServiceDTO, SlotDTO
 from telegram_bot.generated import calendar_pb2, calendar_pb2_grpc, common_pb2
 from telegram_bot.utils.time import to_datetime, to_timestamp
 
 DEFAULT_SLOTS_WINDOW_DAYS = 3
+
+
+def _set_ts_field(field, dt) -> None:
+    ts = to_timestamp(dt)
+    if ts is None:
+        return
+    field.CopyFrom(ts)
 
 
 def _to_service(pb: common_pb2.Service) -> ServiceDTO:
@@ -101,6 +106,40 @@ async def list_provider_services(
     return provider, [_to_service(s) for s in resp.services]
 
 
+async def create_service(
+    stub: calendar_pb2_grpc.CalendarServiceStub,
+    *,
+    name: str,
+    description: str,
+    default_duration_min: int,
+    is_active: bool,
+    metadata,
+    timeout: float,
+) -> ServiceDTO:
+    req = calendar_pb2.CreateServiceRequest(
+        name=name,
+        description=description,
+        default_duration_min=default_duration_min,
+        is_active=is_active,
+    )
+    resp = await stub.CreateService(req, metadata=metadata, timeout=timeout)
+    return _to_service(resp.service)
+
+
+async def set_provider_services(
+    stub: calendar_pb2_grpc.CalendarServiceStub,
+    *,
+    provider_id: str,
+    service_ids: list[str],
+    metadata,
+    timeout: float,
+) -> tuple[ProviderDTO, list[ServiceDTO]]:
+    req = calendar_pb2.SetProviderServicesRequest(provider_id=provider_id, service_ids=service_ids)
+    resp = await stub.SetProviderServices(req, metadata=metadata, timeout=timeout)
+    provider = _to_provider(resp.provider) if resp.HasField("provider") else ProviderDTO(provider_id, "", "")
+    return provider, [_to_service(s) for s in resp.services]
+
+
 async def find_free_slots(
     stub: calendar_pb2_grpc.CalendarServiceStub,
     *,
@@ -145,8 +184,8 @@ async def list_provider_slots(
         page=page,
         page_size=page_size,
     )
-    req.__setattr__("from", to_timestamp(from_dt))
-    req.__setattr__("to", to_timestamp(to_dt))
+    _set_ts_field(getattr(req, "from"), from_dt)
+    _set_ts_field(getattr(req, "to"), to_dt)
     resp = await stub.ListProviderSlots(req, metadata=metadata, timeout=timeout)
     return ([_to_slot_with_booking(s) for s in resp.slots], resp.total_count)
 
@@ -231,10 +270,18 @@ async def list_provider_bookings(
     stub: calendar_pb2_grpc.CalendarServiceStub,
     *,
     provider_id: str,
+    from_dt: datetime | None = None,
+    to_dt: datetime | None = None,
     metadata,
     timeout: float,
 ) -> list[BookingDTO]:
-    req = calendar_pb2.ListProviderBookingsRequest(provider_id=provider_id)
+    now = datetime.now(timezone.utc)
+    start = from_dt or now
+    end = to_dt or (start + timedelta(days=30))
+    req = calendar_pb2.ListProviderBookingsRequest(
+        provider_id=provider_id,
+        **{"from": to_timestamp(start), "to": to_timestamp(end)},
+    )
     resp = await stub.ListProviderBookings(req, metadata=metadata, timeout=timeout)
     return [_to_booking(b) for b in resp.bookings]
 
@@ -280,10 +327,18 @@ async def list_bookings(
     stub: calendar_pb2_grpc.CalendarServiceStub,
     *,
     client_id: str,
+    from_dt: datetime | None = None,
+    to_dt: datetime | None = None,
     metadata,
     timeout: float,
 ) -> list[BookingDTO]:
-    req = calendar_pb2.ListBookingsRequest(client_id=client_id)
+    now = datetime.now(timezone.utc)
+    start = from_dt or (now - timedelta(days=30))
+    end = to_dt or (now + timedelta(days=60))
+    req = calendar_pb2.ListBookingsRequest(
+        client_id=client_id,
+        **{"from": to_timestamp(start), "to": to_timestamp(end)},
+    )
     resp = await stub.ListBookings(req, metadata=metadata, timeout=timeout)
     return [_to_booking(b) for b in resp.bookings]
 

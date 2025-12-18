@@ -27,7 +27,11 @@ class ProviderStates(StatesGroup):
     role_setup_confirm = State()
     main_menu = State()         # P2
     schedule_dashboard = State()  # P3
-    slot_create = State()         # P4
+    slot_create_service = State()  # P3.1
+    slot_create_date = State()     # P4.0
+    slot_create_time = State()     # P4.1
+    slot_create_duration = State() # P4.2
+    slot_create = State()         # P4.3 confirm
     slot_edit = State()           # P5
     slot_delete = State()         # P6
     booking_list = State()        # P7

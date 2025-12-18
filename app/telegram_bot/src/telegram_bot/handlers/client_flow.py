@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
+import logging
 
 import grpc
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.exceptions import TelegramBadRequest
 
 from telegram_bot.keyboards import (
     booking_confirm_keyboard,
@@ -19,7 +21,7 @@ from telegram_bot.keyboards import (
     slots_keyboard,
 )
 from telegram_bot.services import calendar as cal_svc
-from telegram_bot.services.identity import find_provider_by_phone
+from telegram_bot.services.identity import find_provider_by_phone, get_profile
 from telegram_bot.services.errors import user_friendly_error
 from telegram_bot.services.grpc_clients import GrpcClients, build_metadata
 from telegram_bot.dto import SlotDTO
@@ -28,6 +30,13 @@ from telegram_bot.utils.corr import new_corr_id
 
 SERVICE_PAGE_SIZE = 10
 PROVIDER_PAGE_SIZE = 10
+
+logger = logging.getLogger(__name__)
+
+
+def _title_with_id(name: str | None, entity_id: str) -> str:
+    short = entity_id[:8]
+    return name or f"ID {short}"
 
 
 def _is_active_booking(status: str) -> bool:
@@ -45,13 +54,24 @@ def format_bookings_split(bookings, slot_map: dict[str, SlotDTO]):
     active = [b for b in bookings if _is_active_booking(b.status)]
     past = [b for b in bookings if not _is_active_booking(b.status)]
 
+    def _status_text(status: str) -> str:
+        return {
+            "BOOKING_STATUS_PENDING": "Ожидает подтверждения",
+            "BOOKING_STATUS_CONFIRMED": "Подтверждена",
+            "BOOKING_STATUS_CANCELLED": "Отменена",
+        }.get(status, status)
+
     def _line(b):
         created = _fmt_dt(b.created_at)
         slot = slot_map.get(b.slot_id)
         slot_dt = _fmt_dt(slot.starts_at) if slot else "—"
-        return (
-            f"• {b.service_name or b.service_id} у {b.provider_name or b.provider_id} | "
-            f"приём: {slot_dt} | создано {created} | статус: {b.status}"
+        return "\n".join(
+            [
+                f"• {slot_dt} — {_status_text(b.status)}",
+                f"  Услуга: {b.service_name or b.service_id}",
+                f"  Провайдер: {b.provider_name or b.provider_id}",
+                f"  Создано: {created}",
+            ]
         )
 
     parts = []
@@ -61,7 +81,7 @@ def format_bookings_split(bookings, slot_map: dict[str, SlotDTO]):
     if past:
         parts.append("Прошедшие/отменённые:")
         parts.extend([_line(b) for b in past])
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def _truncate(text: str, limit: int = 120) -> str:
@@ -70,6 +90,46 @@ def _truncate(text: str, limit: int = 120) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+async def _safe_edit(message, text: str, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            return False
+        raise
+
+
+async def _ensure_client_context(state: FSMContext, bot, telegram_id: int):
+    data = await state.get_data()
+    if data.get("client_id"):
+        return data
+    settings = bot.dispatcher.workflow_data.get("settings")
+    clients: GrpcClients = bot.dispatcher.workflow_data.get("grpc_clients")
+    corr_id = new_corr_id()
+    try:
+        user = await get_profile(
+            clients.identity_stub(),
+            telegram_id=telegram_id,
+            metadata=build_metadata(corr_id),
+            timeout=settings.grpc_deadline_sec,
+        )
+    except grpc.aio.AioRpcError:
+        return data
+
+    merged = {**data}
+    merged.update(
+        client_id=user.client_id,
+        provider_id=user.provider_id,
+        role=user.role_code,
+        contact_phone=user.contact_phone,
+        display_name=user.display_name,
+        username=user.username,
+    )
+    await state.update_data(**merged)
+    return merged
 
 
 async def _build_slot_map_for_bookings(clients: GrpcClients, settings, bookings) -> dict[str, SlotDTO]:
@@ -147,25 +207,37 @@ async def on_search_services(message: Message, state: FSMContext):
 
 @router.message(F.text == "Мои записи")
 async def on_my_bookings(message: Message, state: FSMContext):
-    data = await state.get_data()
+    data = await _ensure_client_context(state, message.bot, message.from_user.id)
     client_id = data.get("client_id")
     if not client_id:
-        await message.answer("Нет client_id, повторите /start")
+        await message.answer("Не нашёл ваш профиль, повторите /start")
         return
 
     settings = message.bot.dispatcher.workflow_data.get("settings")
     clients: GrpcClients = message.bot.dispatcher.workflow_data.get("grpc_clients")
     corr_id = new_corr_id()
+    corr_id = new_corr_id()
     try:
+        logger.info("client_flow.my_bookings: tg=%s client_id=%s corr=%s", message.from_user.id, client_id, corr_id)
         bookings = await cal_svc.list_bookings(
             clients.calendar_stub(),
             client_id=client_id,
+            from_dt=datetime.now(timezone.utc) - timedelta(days=30),
+            to_dt=datetime.now(timezone.utc) + timedelta(days=60),
             metadata=build_metadata(corr_id),
             timeout=settings.grpc_deadline_sec,
         )
         slot_cache = await _build_slot_map_for_bookings(clients, settings, bookings)
     except grpc.aio.AioRpcError as exc:
-        await message.answer(user_friendly_error(exc))
+        logger.exception(
+            "client_flow.my_bookings failed: tg=%s client_id=%s corr=%s code=%s details=%s",
+            message.from_user.id,
+            client_id,
+            corr_id,
+            exc.code(),
+            exc.details(),
+        )
+        await message.answer(f"Не удалось загрузить записи. Повторите /start или позже. (corr={corr_id})")
         return
 
     await state.set_state(ClientStates.my_bookings)
@@ -269,7 +341,7 @@ async def handle_provider_phone(message: Message, state: FSMContext):
 
     await state.set_state(ClientStates.service_search)
     await message.answer(
-        f"Провайдер найден: {provider.display_name or provider.id}. Выберите услугу:",
+        f"Провайдер найден: {_title_with_id(provider.display_name, provider.id)}. Выберите услугу:",
         reply_markup=services_for_provider_keyboard(provider.id, services),
     )
 
@@ -315,9 +387,9 @@ async def on_service_chosen(callback: CallbackQuery, state: FSMContext):
                 f"Услуга: {service_title}\n"
                 f"{service_desc}\n\n"
                 "Выберите представителя (имя — описание):\n" +
-                "\n".join([f"• {p.display_name or p.id} — {_truncate(p.description)}" for p in providers])
+                "\n".join([f"• {_title_with_id(p.display_name, p.id)} — {_truncate(p.description) or 'нет описания'}" for p in providers])
             ),
-            reply_markup=provider_keyboard(service_id, providers, 1, False, has_next),
+            reply_markup=provider_keyboard(providers, 1, False, has_next),
         )
     await callback.answer()
 
@@ -359,10 +431,16 @@ async def on_service_page(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(ClientStates.service_search, F.data.startswith("provider:page:"))
 async def on_provider_page(callback: CallbackQuery, state: FSMContext):
     try:
-        _, _, service_id, page_str = callback.data.split(":")
+        _, _, page_str = callback.data.split(":")
         page = max(1, int(page_str))
     except ValueError:
         await callback.answer("Неверный формат страницы")
+        return
+
+    data = await state.get_data()
+    service_id = data.get("selected_service_id")
+    if not service_id:
+        await callback.answer("Услуга не выбрана, начните сначала /start", show_alert=True)
         return
 
     settings = callback.message.bot.dispatcher.workflow_data.get("settings")
@@ -393,17 +471,21 @@ async def on_provider_page(callback: CallbackQuery, state: FSMContext):
         (
             f"Услуга: {service_title}\n"
             f"Страница {page}. Выберите представителя (имя — описание):\n" +
-            "\n".join([f"• {p.display_name or p.id} — {_truncate(p.description)}" for p in providers])
+            "\n".join([f"• {_title_with_id(p.display_name, p.id)} — {_truncate(p.description) or 'нет описания'}" for p in providers])
         ),
-        reply_markup=provider_keyboard(service_id, providers, page, has_prev, has_next) if providers else main_menu_keyboard(),
+        reply_markup=provider_keyboard(providers, page, has_prev, has_next) if providers else main_menu_keyboard(),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("provider:choose:"))
 async def on_provider_chosen(callback: CallbackQuery, state: FSMContext):
-    _, _, service_id, provider_id = callback.data.split(":")
+    _, _, provider_id = callback.data.split(":")
     data = await state.get_data()
+    service_id = data.get("selected_service_id")
+    if not service_id:
+        await callback.answer("Услуга не выбрана, начните сначала /start", show_alert=True)
+        return
     await state.update_data(selected_service_id=service_id, selected_provider_id=provider_id)
     provider_cache = data.get("provider_cache") or {}
     service_cache = data.get("service_cache") or {}
@@ -448,20 +530,22 @@ async def on_provider_chosen(callback: CallbackQuery, state: FSMContext):
             return
 
         await state.update_data(provider_cache={p.id: p for p in providers})
-        provider_lines = "\n".join([f"• {p.display_name or p.id} — {_truncate(p.description)}" for p in providers])
+        provider_lines = "\n".join([f"• {_title_with_id(p.display_name, p.id)} — {_truncate(p.description) or 'нет описания'}" for p in providers])
         has_next = total > PROVIDER_PAGE_SIZE
         await callback.message.edit_text(
             (
                 "Свободных слотов нет, попробуйте позже.\n"
                 "Выберите другого представителя:\n" + provider_lines
             ),
-            reply_markup=provider_keyboard(service_id, providers, 1, False, has_next) if providers else main_menu_keyboard(),
+            reply_markup=provider_keyboard(providers, 1, False, has_next) if providers else main_menu_keyboard(),
         )
         await callback.answer()
         return
 
     await state.set_state(ClientStates.slots_view)
-    await callback.message.edit_text(
+    await state.update_data(slot_times={s.id: s.starts_at.isoformat() for s in slots})
+    await _safe_edit(
+        callback.message,
         (
             f"Услуга: {service_title}\n"
             f"Провайдер: {provider_title}\n"
@@ -475,7 +559,13 @@ async def on_provider_chosen(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(ClientStates.service_search, F.data.startswith("provider_service:choose:"))
 async def on_provider_service_chosen(callback: CallbackQuery, state: FSMContext):
-    _, _, provider_id, service_id = callback.data.split(":")
+    _, _, service_id = callback.data.split(":")
+    data = await state.get_data()
+    provider_id = data.get("selected_provider_id")
+    if not provider_id:
+        await callback.answer("Провайдер не выбран, начните сначала /start", show_alert=True)
+        return
+
     await state.update_data(selected_service_id=service_id, selected_provider_id=provider_id)
 
     settings = callback.message.bot.dispatcher.workflow_data.get("settings")
@@ -506,7 +596,9 @@ async def on_provider_service_chosen(callback: CallbackQuery, state: FSMContext)
         return
 
     await state.set_state(ClientStates.slots_view)
-    await callback.message.edit_text(
+    await state.update_data(slot_times={s.id: s.starts_at.isoformat() for s in slots})
+    await _safe_edit(
+        callback.message,
         f"Провайдер выбран: {provider_id}. Доступные слоты:",
         reply_markup=slots_keyboard(service_id, provider_id, slots),
     )
@@ -546,9 +638,9 @@ async def on_provider_back(callback: CallbackQuery, state: FSMContext):
         (
             f"Услуга: {service_title}\n"
             f"Страница {page}. Выберите представителя (имя — описание):\n" +
-            "\n".join([f"• {p.display_name or p.id} — {_truncate(p.description)}" for p in providers])
+            "\n".join([f"• {_title_with_id(p.display_name, p.id)} — {_truncate(p.description) or 'нет описания'}" for p in providers])
         ),
-        reply_markup=provider_keyboard(service_id, providers, page, has_prev, has_next) if providers else main_menu_keyboard(),
+        reply_markup=provider_keyboard(providers, page, has_prev, has_next) if providers else main_menu_keyboard(),
     )
     await callback.answer()
 
@@ -556,19 +648,47 @@ async def on_provider_back(callback: CallbackQuery, state: FSMContext):
 # Слоты → подтверждение
 @router.callback_query(ClientStates.slots_view, F.data.startswith("slot:choose:"))
 async def on_slot_chosen(callback: CallbackQuery, state: FSMContext):
-    _, _, service_id, provider_id, slot_id = callback.data.split(":")
+    _, _, slot_id = callback.data.split(":")
+    data = await state.get_data()
+    service_id = data.get("selected_service_id")
+    provider_id = data.get("selected_provider_id")
+    slot_times = data.get("slot_times") or {}
+    slot_iso = slot_times.get(slot_id)
+    slot_dt = datetime.fromisoformat(slot_iso) if slot_iso else None
+    if not service_id or not provider_id:
+        await callback.answer("Контекст потерян, начните заново /start", show_alert=True)
+        return
+
+    service_cache = data.get("service_cache") or {}
+    provider_cache = data.get("provider_cache") or {}
+    service = service_cache.get(service_id)
+    provider = provider_cache.get(provider_id)
+    service_title = service.name if service else service_id
+    provider_title = provider.display_name if provider else provider_id
+    slot_text = _fmt_dt(slot_dt)
+
     await state.update_data(selected_slot_id=slot_id)
     await state.set_state(ClientStates.booking_confirm)
     await callback.message.edit_text(
-        f"Слот выбран: {slot_id}. Подтвердить?",
-        reply_markup=booking_confirm_keyboard(service_id, provider_id, slot_id),
+        (
+            f"Запись: {service_title} у {provider_title}\n"
+            f"Время: {slot_text}\n"
+            "Подтвердить?"
+        ),
+        reply_markup=booking_confirm_keyboard(slot_id),
     )
     await callback.answer()
 
 
 @router.callback_query(ClientStates.booking_confirm, F.data.startswith("booking:cancel:"))
 async def on_booking_cancel(callback: CallbackQuery, state: FSMContext):
-    _, _, service_id, provider_id = callback.data.split(":")
+    _, _, slot_id = callback.data.split(":")
+    data = await state.get_data()
+    service_id = data.get("selected_service_id")
+    provider_id = data.get("selected_provider_id")
+    if not service_id or not provider_id:
+        await callback.answer("Контекст потерян, начните заново /start", show_alert=True)
+        return
     settings = callback.message.bot.dispatcher.workflow_data.get("settings")
     clients: GrpcClients = callback.message.bot.dispatcher.workflow_data.get("grpc_clients")
     corr_id = new_corr_id()
@@ -588,6 +708,7 @@ async def on_booking_cancel(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
+    await state.update_data(slot_times={s.id: s.starts_at.isoformat() for s in slots})
     await state.set_state(ClientStates.slots_view)
     await callback.message.edit_text(
         "Выберите другой слот:", reply_markup=slots_keyboard(service_id, provider_id, slots)
@@ -597,12 +718,25 @@ async def on_booking_cancel(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(ClientStates.booking_confirm, F.data.startswith("booking:confirm:"))
 async def on_booking_confirm(callback: CallbackQuery, state: FSMContext):
-    _, _, service_id, provider_id, slot_id = callback.data.split(":")
+    _, _, slot_id = callback.data.split(":")
     data = await state.get_data()
+    service_id = data.get("selected_service_id")
+    provider_id = data.get("selected_provider_id")
     client_id = data.get("client_id")
-    if not client_id:
-        await callback.answer("Нет client_id, повторите /start", show_alert=True)
+    slot_times = data.get("slot_times") or {}
+    slot_iso = slot_times.get(slot_id)
+    slot_dt = datetime.fromisoformat(slot_iso) if slot_iso else None
+    if not client_id or not service_id or not provider_id:
+        await callback.answer("Контекст потерян, начните заново /start", show_alert=True)
         return
+
+    service_cache = data.get("service_cache") or {}
+    provider_cache = data.get("provider_cache") or {}
+    service = service_cache.get(service_id)
+    provider = provider_cache.get(provider_id)
+    service_title = (service.name if service else None) or service_id
+    provider_title = (provider.display_name if provider else None) or provider_id
+    slot_text = _fmt_dt(slot_dt)
 
     settings = callback.message.bot.dispatcher.workflow_data.get("settings")
     clients: GrpcClients = callback.message.bot.dispatcher.workflow_data.get("grpc_clients")
@@ -632,6 +766,8 @@ async def on_booking_confirm(callback: CallbackQuery, state: FSMContext):
             metadata=build_metadata(corr_id),
             timeout=settings.grpc_deadline_sec,
         )
+        service_title = booking.service_name or service_title
+        provider_title = booking.provider_name or provider_title
     except grpc.aio.AioRpcError as exc:
         await callback.message.edit_text(user_friendly_error(exc))
         await callback.answer()
@@ -639,7 +775,13 @@ async def on_booking_confirm(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(ClientStates.booking_result)
     await callback.message.edit_text(
-        f"Бронь создана: {booking.service_name} у {booking.provider_name} на {booking.id}",
+        (
+            "Запись создана!\n"
+            f"Услуга: {service_title}\n"
+            f"Провайдер: {provider_title}\n"
+            f"Время: {slot_text}\n"
+            f"Статус: {booking.status}"
+        ),
         reply_markup=booking_result_keyboard(success=True),
     )
     await callback.answer("Успешно")
@@ -648,25 +790,36 @@ async def on_booking_confirm(callback: CallbackQuery, state: FSMContext):
 # Бронирование результат → переходы
 @router.callback_query(ClientStates.booking_result, F.data == "bookings:mine")
 async def on_booking_result_to_my(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
+    data = await _ensure_client_context(state, callback.message.bot, callback.from_user.id)
     client_id = data.get("client_id")
     if not client_id:
-        await callback.answer("Нет client_id, повторите /start", show_alert=True)
+        await callback.answer("Не нашёл ваш профиль, повторите /start", show_alert=True)
         return
 
     settings = callback.message.bot.dispatcher.workflow_data.get("settings")
     clients: GrpcClients = callback.message.bot.dispatcher.workflow_data.get("grpc_clients")
     corr_id = new_corr_id()
     try:
+        logger.info("client_flow.bookings_inline(from_result): tg=%s client_id=%s corr=%s", callback.from_user.id, client_id, corr_id)
         bookings = await cal_svc.list_bookings(
             clients.calendar_stub(),
             client_id=client_id,
+            from_dt=datetime.now(timezone.utc) - timedelta(days=30),
+            to_dt=datetime.now(timezone.utc) + timedelta(days=60),
             metadata=build_metadata(corr_id),
             timeout=settings.grpc_deadline_sec,
         )
         slot_cache = await _build_slot_map_for_bookings(clients, settings, bookings)
     except grpc.aio.AioRpcError as exc:
-        await callback.message.edit_text(user_friendly_error(exc))
+        logger.exception(
+            "client_flow.bookings_inline(from_result) failed: tg=%s client_id=%s corr=%s code=%s details=%s",
+            callback.from_user.id,
+            client_id,
+            corr_id,
+            exc.code(),
+            exc.details(),
+        )
+        await callback.message.edit_text(f"Не удалось загрузить записи. Повторите /start или позже. (corr={corr_id})")
         await callback.answer()
         return
 
@@ -683,25 +836,36 @@ async def on_booking_result_to_my(callback: CallbackQuery, state: FSMContext):
 # Мои записи
 @router.callback_query(F.data == "bookings:mine")
 async def on_bookings_inline(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
+    data = await _ensure_client_context(state, callback.message.bot, callback.from_user.id)
     client_id = data.get("client_id")
     if not client_id:
-        await callback.answer("Нет client_id, повторите /start", show_alert=True)
+        await callback.answer("Не нашёл ваш профиль, повторите /start", show_alert=True)
         return
 
     settings = callback.message.bot.dispatcher.workflow_data.get("settings")
     clients: GrpcClients = callback.message.bot.dispatcher.workflow_data.get("grpc_clients")
     corr_id = new_corr_id()
     try:
+        logger.info("client_flow.bookings_inline: tg=%s client_id=%s corr=%s", callback.from_user.id, client_id, corr_id)
         bookings = await cal_svc.list_bookings(
             clients.calendar_stub(),
             client_id=client_id,
+            from_dt=datetime.now(timezone.utc) - timedelta(days=30),
+            to_dt=datetime.now(timezone.utc) + timedelta(days=60),
             metadata=build_metadata(corr_id),
             timeout=settings.grpc_deadline_sec,
         )
         slot_cache = await _build_slot_map_for_bookings(clients, settings, bookings)
     except grpc.aio.AioRpcError as exc:
-        await callback.message.edit_text(user_friendly_error(exc))
+        logger.exception(
+            "client_flow.bookings_inline failed: tg=%s client_id=%s corr=%s code=%s details=%s",
+            callback.from_user.id,
+            client_id,
+            corr_id,
+            exc.code(),
+            exc.details(),
+        )
+        await callback.message.edit_text(f"Не удалось загрузить записи. Повторите /start или позже. (corr={corr_id})")
         await callback.answer()
         return
 
@@ -718,6 +882,7 @@ async def on_bookings_inline(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(ClientStates.my_bookings, F.data.startswith("booking:detail:"))
 async def on_booking_detail(callback: CallbackQuery, state: FSMContext):
     _, _, booking_id = callback.data.split(":")
+    data = await state.get_data()
     settings = callback.message.bot.dispatcher.workflow_data.get("settings")
     clients: GrpcClients = callback.message.bot.dispatcher.workflow_data.get("grpc_clients")
     corr_id = new_corr_id()

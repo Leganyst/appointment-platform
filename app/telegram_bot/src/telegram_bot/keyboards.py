@@ -59,17 +59,17 @@ def service_search_keyboard(services: list[ServiceDTO], page: int, has_prev: boo
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def provider_keyboard(service_id: str, providers: list[ProviderDTO], page: int, has_prev: bool, has_next: bool):
+def provider_keyboard(providers: list[ProviderDTO], page: int, has_prev: bool, has_next: bool):
     buttons = [
-        [InlineKeyboardButton(text=p.display_name or p.id, callback_data=f"provider:choose:{service_id}:{p.id}")]
+        [InlineKeyboardButton(text=p.display_name or f"ID {p.id[:8]}", callback_data=f"provider:choose:{p.id}")]
         for p in providers
     ]
     nav_row = []
     if has_prev:
-        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"provider:page:{service_id}:{page-1}"))
+        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"provider:page:{page-1}"))
     nav_row.append(InlineKeyboardButton(text=f"Стр. {page}", callback_data="noop"))
     if has_next:
-        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"provider:page:{service_id}:{page+1}"))
+        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"provider:page:{page+1}"))
     buttons.append(nav_row)
     buttons.append([InlineKeyboardButton(text="В главное меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -77,7 +77,7 @@ def provider_keyboard(service_id: str, providers: list[ProviderDTO], page: int, 
 
 def services_for_provider_keyboard(provider_id: str, services: list[ServiceDTO]):
     buttons = [
-        [InlineKeyboardButton(text=s.name, callback_data=f"provider_service:choose:{provider_id}:{s.id}")]
+        [InlineKeyboardButton(text=s.name, callback_data=f"provider_service:choose:{s.id}")]
         for s in services[:20]
     ]
     buttons.append([InlineKeyboardButton(text="В главное меню", callback_data="menu:main")])
@@ -89,7 +89,7 @@ def slots_keyboard(service_id: str, provider_id: str, slots: list[SlotDTO]):
         [
             InlineKeyboardButton(
                 text=f"{s.starts_at.strftime('%d.%m %H:%M')}",
-                callback_data=f"slot:choose:{service_id}:{provider_id}:{s.id}",
+                callback_data=f"slot:choose:{s.id}",
             )
         ]
         for s in slots[:15]
@@ -100,11 +100,11 @@ def slots_keyboard(service_id: str, provider_id: str, slots: list[SlotDTO]):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def booking_confirm_keyboard(service_id: str, provider_id: str, slot_id: str):
+def booking_confirm_keyboard(slot_id: str):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Подтвердить", callback_data=f"booking:confirm:{service_id}:{provider_id}:{slot_id}")],
-            [InlineKeyboardButton(text="Отменить", callback_data=f"booking:cancel:{service_id}:{provider_id}")],
+            [InlineKeyboardButton(text="Подтвердить", callback_data=f"booking:confirm:{slot_id}")],
+            [InlineKeyboardButton(text="Отменить", callback_data=f"booking:cancel:{slot_id}")],
         ]
     )
 
@@ -135,6 +135,16 @@ def booking_details_keyboard(booking_id: str):
             [InlineKeyboardButton(text="Назад к списку", callback_data="bookings:mine")],
         ]
     )
+
+
+def provider_bookings_keyboard(bookings: list[BookingDTO], cancellable_ids: set[str]):
+    buttons: list[list[InlineKeyboardButton]] = []
+    for b in bookings[:20]:
+        if b.id in cancellable_ids:
+            title = f"Отменить {b.service_name or b.service_id}"
+            buttons.append([InlineKeyboardButton(text=title, callback_data=f"provider:booking:cancel:{b.id}")])
+    buttons.append([InlineKeyboardButton(text="В главное меню", callback_data="provider:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 # Provider-specific keyboards
@@ -185,6 +195,15 @@ def provider_add_slot_confirm(slot_repr: str):
             [InlineKeyboardButton(text="Отменить", callback_data="provider:slot:create:cancel")],
         ]
     )
+
+
+def provider_service_select_keyboard(services: list[ServiceDTO]):
+    buttons = [
+        [InlineKeyboardButton(text=s.name, callback_data=f"provider:slot:service:{s.id}")]
+        for s in services[:50]
+    ]
+    buttons.append([InlineKeyboardButton(text="В меню", callback_data="provider:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def cancel_result_keyboard():

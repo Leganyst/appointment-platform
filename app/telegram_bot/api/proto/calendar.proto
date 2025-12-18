@@ -250,12 +250,35 @@ message ListServicesResponse {
   int32 total_count = 2;
 }
 
+// Создание услуги (для админки или мастера при онбординге).
+message CreateServiceRequest {
+  string name = 1;
+  string description = 2;
+  int32 default_duration_min = 3; // может быть 0, если не задано
+  bool is_active = 4; // по умолчанию true
+}
+
+message CreateServiceResponse {
+  common.v1.Service service = 1;
+}
+
 // Список услуг конкретного провайдера.
 message ListProviderServicesRequest {
   string provider_id = 1;
 }
 
 message ListProviderServicesResponse {
+  common.v1.Provider provider = 1;
+  repeated common.v1.Service services = 2;
+}
+
+// Установить список услуг провайдера (заменяет существующие связи).
+message SetProviderServicesRequest {
+  string provider_id = 1;
+  repeated string service_ids = 2;
+}
+
+message SetProviderServicesResponse {
   common.v1.Provider provider = 1;
   repeated common.v1.Service services = 2;
 }
@@ -424,11 +447,15 @@ service CalendarService {
 
   // Публичный каталог услуг.
   rpc ListServices (ListServicesRequest) returns (ListServicesResponse);
+  // Создание услуги.
+  rpc CreateService (CreateServiceRequest) returns (CreateServiceResponse);
   // Публичный список провайдеров (опционально отфильтрованный по услуге).
   rpc ListProviders (ListProvidersRequest) returns (ListProvidersResponse);
 
   // Публичный профиль провайдера + его услуги.
   rpc ListProviderServices (ListProviderServicesRequest) returns (ListProviderServicesResponse);
+  // Установить список услуг провайдера (заменить связи provider_services).
+  rpc SetProviderServices (SetProviderServicesRequest) returns (SetProviderServicesResponse);
   // Обновление профиля провайдера.
   rpc UpdateProviderProfile (UpdateProviderProfileRequest) returns (UpdateProviderProfileResponse);
 }

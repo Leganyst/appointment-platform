@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -12,11 +14,12 @@ from telegram_bot.keyboards import (
 )
 from telegram_bot.services import calendar as cal_svc
 from telegram_bot.services.grpc_clients import build_metadata
-from telegram_bot.services.identity import set_role, update_contacts
+from telegram_bot.services.identity import get_profile, set_role, update_contacts
 from telegram_bot.states import ClientStates, ProviderStates
 from telegram_bot.utils.corr import new_corr_id
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 @router.callback_query(F.data == "role:start")
@@ -148,6 +151,15 @@ async def confirm_role(callback: CallbackQuery, state: FSMContext):
     elif role_code == "provider":
         contact = (data.get("provider_setup") or {}).get("contact")
 
+    logger.info(
+        "role:confirm start tg=%s role=%s provider_setup=%s client_contact=%s corr=%s",
+        callback.from_user.id,
+        role_code,
+        data.get("provider_setup"),
+        data.get("client_contact"),
+        corr_id,
+    )
+
     try:
         user = await set_role(
             stub,
@@ -156,9 +168,36 @@ async def confirm_role(callback: CallbackQuery, state: FSMContext):
             metadata=build_metadata(corr_id),
             timeout=settings.grpc_deadline_sec,
         )
+        logger.info(
+            "role:set_role ok tg=%s role=%s client_id=%s provider_id=%s corr=%s",
+            callback.from_user.id,
+            user.role_code,
+            user.client_id,
+            user.provider_id,
+            corr_id,
+        )
     except grpc.aio.AioRpcError:
         await callback.answer("Ошибка связи с Identity", show_alert=True)
         return
+
+    if role_code == "provider" and not user.provider_id:
+        try:
+            profile = await get_profile(
+                stub,
+                telegram_id=callback.from_user.id,
+                metadata=build_metadata(corr_id),
+                timeout=settings.grpc_deadline_sec,
+            )
+            if profile and profile.provider_id:
+                user = profile
+                logger.info(
+                    "role:get_profile filled provider_id tg=%s provider_id=%s corr=%s",
+                    callback.from_user.id,
+                    user.provider_id,
+                    corr_id,
+                )
+        except grpc.aio.AioRpcError:
+            logger.warning("role:get_profile failed tg=%s corr=%s", callback.from_user.id, corr_id)
 
     # Save contacts if provided
     if contact:
@@ -172,6 +211,13 @@ async def confirm_role(callback: CallbackQuery, state: FSMContext):
                 metadata=build_metadata(corr_id),
                 timeout=settings.grpc_deadline_sec,
             )
+            logger.info(
+                "role:update_contacts ok tg=%s contact=%s role=%s corr=%s",
+                callback.from_user.id,
+                contact,
+                user.role_code,
+                corr_id,
+            )
         except grpc.aio.AioRpcError:
             await callback.answer("Не удалось сохранить контакты", show_alert=True)
             return
@@ -180,7 +226,7 @@ async def confirm_role(callback: CallbackQuery, state: FSMContext):
     if role_code == "provider":
         setup = data.get("provider_setup", {})
         try:
-            await cal_svc.update_provider_profile(
+            prof = await cal_svc.update_provider_profile(
                 clients.calendar_stub(),
                 provider_id=user.provider_id,
                 display_name=setup.get("name", ""),
@@ -188,9 +234,51 @@ async def confirm_role(callback: CallbackQuery, state: FSMContext):
                 metadata=build_metadata(corr_id),
                 timeout=settings.grpc_deadline_sec,
             )
+            logger.info(
+                "role:update_provider_profile ok tg=%s provider_id=%s display_name=%s description=%s corr=%s",
+                callback.from_user.id,
+                user.provider_id,
+                prof.display_name if hasattr(prof, "display_name") else setup.get("name", ""),
+                prof.description if hasattr(prof, "description") else setup.get("description", ""),
+                corr_id,
+            )
         except grpc.aio.AioRpcError:
             await callback.answer("Профиль сохранить не удалось", show_alert=True)
             return
+
+        # Create default service and link to provider so scheduling works immediately
+        try:
+            service = await cal_svc.create_service(
+                clients.calendar_stub(),
+                name=setup.get("name", ""),
+                description=setup.get("description", ""),
+                default_duration_min=60,
+                is_active=True,
+                metadata=build_metadata(corr_id),
+                timeout=settings.grpc_deadline_sec,
+            )
+            _, services = await cal_svc.set_provider_services(
+                clients.calendar_stub(),
+                provider_id=user.provider_id,
+                service_ids=[service.id],
+                metadata=build_metadata(corr_id),
+                timeout=settings.grpc_deadline_sec,
+            )
+            logger.info(
+                "role:create_service ok tg=%s provider_id=%s service_id=%s linked_services=%s corr=%s",
+                callback.from_user.id,
+                user.provider_id,
+                service.id,
+                ",".join(s.id for s in services),
+                corr_id,
+            )
+        except grpc.aio.AioRpcError:
+            logger.warning(
+                "role:create_service failed tg=%s provider_id=%s corr=%s",
+                callback.from_user.id,
+                user.provider_id,
+                corr_id,
+            )
 
         await state.set_state(ProviderStates.main_menu)
         reply_markup = provider_main_menu_keyboard()

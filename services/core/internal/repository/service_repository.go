@@ -11,8 +11,10 @@ import (
 
 type ServiceRepository interface {
 	GetByID(ctx context.Context, id string) (*model.Service, error)
+	Create(ctx context.Context, service *model.Service) error
 	List(ctx context.Context, onlyActive bool, limit, offset int) ([]model.Service, int64, error)
 	ListByProvider(ctx context.Context, providerID uuid.UUID) ([]model.Service, error)
+	ListByIDs(ctx context.Context, ids []uuid.UUID) ([]model.Service, error)
 }
 
 type GormServiceRepository struct {
@@ -29,6 +31,10 @@ func (r *GormServiceRepository) GetByID(ctx context.Context, id string) (*model.
 		return nil, err
 	}
 	return &s, nil
+}
+
+func (r *GormServiceRepository) Create(ctx context.Context, service *model.Service) error {
+	return r.db.WithContext(ctx).Create(service).Error
 }
 
 func (r *GormServiceRepository) List(ctx context.Context, onlyActive bool, limit, offset int) ([]model.Service, int64, error) {
@@ -65,6 +71,20 @@ func (r *GormServiceRepository) ListByProvider(ctx context.Context, providerID u
 		Where("provider_services.provider_id = ?", providerID).
 		Order("services.name ASC").
 		Scan(&services).Error
+	if err != nil {
+		return nil, err
+	}
+	return services, nil
+}
+
+func (r *GormServiceRepository) ListByIDs(ctx context.Context, ids []uuid.UUID) ([]model.Service, error) {
+	if len(ids) == 0 {
+		return []model.Service{}, nil
+	}
+	var services []model.Service
+	err := r.db.WithContext(ctx).
+		Where("id IN ?", ids).
+		Find(&services).Error
 	if err != nil {
 		return nil, err
 	}

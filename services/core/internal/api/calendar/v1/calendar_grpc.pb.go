@@ -30,6 +30,8 @@ type CalendarServiceClient interface {
 	GetBooking(ctx context.Context, in *GetBookingRequest, opts ...grpc.CallOption) (*GetBookingResponse, error)
 	// Отмена ранее созданного бронирования.
 	CancelBooking(ctx context.Context, in *CancelBookingRequest, opts ...grpc.CallOption) (*CancelBookingResponse, error)
+	// Подтверждение бронирования (из ожидания в confirmed).
+	ConfirmBooking(ctx context.Context, in *ConfirmBookingRequest, opts ...grpc.CallOption) (*ConfirmBookingResponse, error)
 	// Проверка доступности слота.
 	CheckAvailability(ctx context.Context, in *CheckAvailabilityRequest, opts ...grpc.CallOption) (*CheckAvailabilityResponse, error)
 	// Развёртывание расписания в окне.
@@ -38,10 +40,14 @@ type CalendarServiceClient interface {
 	ValidateSlot(ctx context.Context, in *ValidateSlotRequest, opts ...grpc.CallOption) (*ValidateSlotResponse, error)
 	// Быстрые предикаты для бота.
 	GetNearestFreeSlot(ctx context.Context, in *GetNearestFreeSlotRequest, opts ...grpc.CallOption) (*GetNearestFreeSlotResponse, error)
+	// Следующий свободный слот заданного провайдера от времени from (ограниченный until).
 	GetNextProviderSlot(ctx context.Context, in *GetNextProviderSlotRequest, opts ...grpc.CallOption) (*GetNextProviderSlotResponse, error)
+	// Маленькая выдача свободных слотов в интервале без пагинации (для быстрых подсказок).
 	FindFreeSlots(ctx context.Context, in *FindFreeSlotsRequest, opts ...grpc.CallOption) (*FindFreeSlotsResponse, error)
 	// Список бронирований клиента за период.
 	ListBookings(ctx context.Context, in *ListBookingsRequest, opts ...grpc.CallOption) (*ListBookingsResponse, error)
+	// Список бронирований провайдера за период.
+	ListProviderBookings(ctx context.Context, in *ListProviderBookingsRequest, opts ...grpc.CallOption) (*ListProviderBookingsResponse, error)
 	// Получение расписаний провайдера (повторяющиеся правила).
 	ListProviderSchedules(ctx context.Context, in *ListProviderSchedulesRequest, opts ...grpc.CallOption) (*ListProviderSchedulesResponse, error)
 	// CRUD расписаний провайдера.
@@ -58,10 +64,20 @@ type CalendarServiceClient interface {
 	UpdateSlot(ctx context.Context, in *UpdateSlotRequest, opts ...grpc.CallOption) (*UpdateSlotResponse, error)
 	// Удаление слота по ID.
 	DeleteSlot(ctx context.Context, in *DeleteSlotRequest, opts ...grpc.CallOption) (*DeleteSlotResponse, error)
+	// Список слотов провайдера (со статусами и бронями).
+	ListProviderSlots(ctx context.Context, in *ListProviderSlotsRequest, opts ...grpc.CallOption) (*ListProviderSlotsResponse, error)
 	// Публичный каталог услуг.
 	ListServices(ctx context.Context, in *ListServicesRequest, opts ...grpc.CallOption) (*ListServicesResponse, error)
+	// Создание услуги.
+	CreateService(ctx context.Context, in *CreateServiceRequest, opts ...grpc.CallOption) (*CreateServiceResponse, error)
+	// Публичный список провайдеров (опционально отфильтрованный по услуге).
+	ListProviders(ctx context.Context, in *ListProvidersRequest, opts ...grpc.CallOption) (*ListProvidersResponse, error)
 	// Публичный профиль провайдера + его услуги.
 	ListProviderServices(ctx context.Context, in *ListProviderServicesRequest, opts ...grpc.CallOption) (*ListProviderServicesResponse, error)
+	// Установить список услуг провайдера (заменить связи provider_services).
+	SetProviderServices(ctx context.Context, in *SetProviderServicesRequest, opts ...grpc.CallOption) (*SetProviderServicesResponse, error)
+	// Обновление профиля провайдера.
+	UpdateProviderProfile(ctx context.Context, in *UpdateProviderProfileRequest, opts ...grpc.CallOption) (*UpdateProviderProfileResponse, error)
 }
 
 type calendarServiceClient struct {
@@ -126,6 +142,15 @@ func (c *calendarServiceClient) CancelBooking(ctx context.Context, in *CancelBoo
 	return out, nil
 }
 
+func (c *calendarServiceClient) ConfirmBooking(ctx context.Context, in *ConfirmBookingRequest, opts ...grpc.CallOption) (*ConfirmBookingResponse, error) {
+	out := new(ConfirmBookingResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/ConfirmBooking", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *calendarServiceClient) CheckAvailability(ctx context.Context, in *CheckAvailabilityRequest, opts ...grpc.CallOption) (*CheckAvailabilityResponse, error) {
 	out := new(CheckAvailabilityResponse)
 	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/CheckAvailability", in, out, opts...)
@@ -183,6 +208,15 @@ func (c *calendarServiceClient) FindFreeSlots(ctx context.Context, in *FindFreeS
 func (c *calendarServiceClient) ListBookings(ctx context.Context, in *ListBookingsRequest, opts ...grpc.CallOption) (*ListBookingsResponse, error) {
 	out := new(ListBookingsResponse)
 	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/ListBookings", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *calendarServiceClient) ListProviderBookings(ctx context.Context, in *ListProviderBookingsRequest, opts ...grpc.CallOption) (*ListProviderBookingsResponse, error) {
+	out := new(ListProviderBookingsResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/ListProviderBookings", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -261,6 +295,15 @@ func (c *calendarServiceClient) DeleteSlot(ctx context.Context, in *DeleteSlotRe
 	return out, nil
 }
 
+func (c *calendarServiceClient) ListProviderSlots(ctx context.Context, in *ListProviderSlotsRequest, opts ...grpc.CallOption) (*ListProviderSlotsResponse, error) {
+	out := new(ListProviderSlotsResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/ListProviderSlots", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *calendarServiceClient) ListServices(ctx context.Context, in *ListServicesRequest, opts ...grpc.CallOption) (*ListServicesResponse, error) {
 	out := new(ListServicesResponse)
 	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/ListServices", in, out, opts...)
@@ -270,9 +313,45 @@ func (c *calendarServiceClient) ListServices(ctx context.Context, in *ListServic
 	return out, nil
 }
 
+func (c *calendarServiceClient) CreateService(ctx context.Context, in *CreateServiceRequest, opts ...grpc.CallOption) (*CreateServiceResponse, error) {
+	out := new(CreateServiceResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/CreateService", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *calendarServiceClient) ListProviders(ctx context.Context, in *ListProvidersRequest, opts ...grpc.CallOption) (*ListProvidersResponse, error) {
+	out := new(ListProvidersResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/ListProviders", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *calendarServiceClient) ListProviderServices(ctx context.Context, in *ListProviderServicesRequest, opts ...grpc.CallOption) (*ListProviderServicesResponse, error) {
 	out := new(ListProviderServicesResponse)
 	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/ListProviderServices", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *calendarServiceClient) SetProviderServices(ctx context.Context, in *SetProviderServicesRequest, opts ...grpc.CallOption) (*SetProviderServicesResponse, error) {
+	out := new(SetProviderServicesResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/SetProviderServices", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *calendarServiceClient) UpdateProviderProfile(ctx context.Context, in *UpdateProviderProfileRequest, opts ...grpc.CallOption) (*UpdateProviderProfileResponse, error) {
+	out := new(UpdateProviderProfileResponse)
+	err := c.cc.Invoke(ctx, "/calendar.v1.CalendarService/UpdateProviderProfile", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +374,8 @@ type CalendarServiceServer interface {
 	GetBooking(context.Context, *GetBookingRequest) (*GetBookingResponse, error)
 	// Отмена ранее созданного бронирования.
 	CancelBooking(context.Context, *CancelBookingRequest) (*CancelBookingResponse, error)
+	// Подтверждение бронирования (из ожидания в confirmed).
+	ConfirmBooking(context.Context, *ConfirmBookingRequest) (*ConfirmBookingResponse, error)
 	// Проверка доступности слота.
 	CheckAvailability(context.Context, *CheckAvailabilityRequest) (*CheckAvailabilityResponse, error)
 	// Развёртывание расписания в окне.
@@ -303,10 +384,14 @@ type CalendarServiceServer interface {
 	ValidateSlot(context.Context, *ValidateSlotRequest) (*ValidateSlotResponse, error)
 	// Быстрые предикаты для бота.
 	GetNearestFreeSlot(context.Context, *GetNearestFreeSlotRequest) (*GetNearestFreeSlotResponse, error)
+	// Следующий свободный слот заданного провайдера от времени from (ограниченный until).
 	GetNextProviderSlot(context.Context, *GetNextProviderSlotRequest) (*GetNextProviderSlotResponse, error)
+	// Маленькая выдача свободных слотов в интервале без пагинации (для быстрых подсказок).
 	FindFreeSlots(context.Context, *FindFreeSlotsRequest) (*FindFreeSlotsResponse, error)
 	// Список бронирований клиента за период.
 	ListBookings(context.Context, *ListBookingsRequest) (*ListBookingsResponse, error)
+	// Список бронирований провайдера за период.
+	ListProviderBookings(context.Context, *ListProviderBookingsRequest) (*ListProviderBookingsResponse, error)
 	// Получение расписаний провайдера (повторяющиеся правила).
 	ListProviderSchedules(context.Context, *ListProviderSchedulesRequest) (*ListProviderSchedulesResponse, error)
 	// CRUD расписаний провайдера.
@@ -323,10 +408,20 @@ type CalendarServiceServer interface {
 	UpdateSlot(context.Context, *UpdateSlotRequest) (*UpdateSlotResponse, error)
 	// Удаление слота по ID.
 	DeleteSlot(context.Context, *DeleteSlotRequest) (*DeleteSlotResponse, error)
+	// Список слотов провайдера (со статусами и бронями).
+	ListProviderSlots(context.Context, *ListProviderSlotsRequest) (*ListProviderSlotsResponse, error)
 	// Публичный каталог услуг.
 	ListServices(context.Context, *ListServicesRequest) (*ListServicesResponse, error)
+	// Создание услуги.
+	CreateService(context.Context, *CreateServiceRequest) (*CreateServiceResponse, error)
+	// Публичный список провайдеров (опционально отфильтрованный по услуге).
+	ListProviders(context.Context, *ListProvidersRequest) (*ListProvidersResponse, error)
 	// Публичный профиль провайдера + его услуги.
 	ListProviderServices(context.Context, *ListProviderServicesRequest) (*ListProviderServicesResponse, error)
+	// Установить список услуг провайдера (заменить связи provider_services).
+	SetProviderServices(context.Context, *SetProviderServicesRequest) (*SetProviderServicesResponse, error)
+	// Обновление профиля провайдера.
+	UpdateProviderProfile(context.Context, *UpdateProviderProfileRequest) (*UpdateProviderProfileResponse, error)
 	mustEmbedUnimplementedCalendarServiceServer()
 }
 
@@ -352,6 +447,9 @@ func (UnimplementedCalendarServiceServer) GetBooking(context.Context, *GetBookin
 func (UnimplementedCalendarServiceServer) CancelBooking(context.Context, *CancelBookingRequest) (*CancelBookingResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CancelBooking not implemented")
 }
+func (UnimplementedCalendarServiceServer) ConfirmBooking(context.Context, *ConfirmBookingRequest) (*ConfirmBookingResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ConfirmBooking not implemented")
+}
 func (UnimplementedCalendarServiceServer) CheckAvailability(context.Context, *CheckAvailabilityRequest) (*CheckAvailabilityResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CheckAvailability not implemented")
 }
@@ -372,6 +470,9 @@ func (UnimplementedCalendarServiceServer) FindFreeSlots(context.Context, *FindFr
 }
 func (UnimplementedCalendarServiceServer) ListBookings(context.Context, *ListBookingsRequest) (*ListBookingsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListBookings not implemented")
+}
+func (UnimplementedCalendarServiceServer) ListProviderBookings(context.Context, *ListProviderBookingsRequest) (*ListProviderBookingsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListProviderBookings not implemented")
 }
 func (UnimplementedCalendarServiceServer) ListProviderSchedules(context.Context, *ListProviderSchedulesRequest) (*ListProviderSchedulesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListProviderSchedules not implemented")
@@ -397,11 +498,26 @@ func (UnimplementedCalendarServiceServer) UpdateSlot(context.Context, *UpdateSlo
 func (UnimplementedCalendarServiceServer) DeleteSlot(context.Context, *DeleteSlotRequest) (*DeleteSlotResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteSlot not implemented")
 }
+func (UnimplementedCalendarServiceServer) ListProviderSlots(context.Context, *ListProviderSlotsRequest) (*ListProviderSlotsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListProviderSlots not implemented")
+}
 func (UnimplementedCalendarServiceServer) ListServices(context.Context, *ListServicesRequest) (*ListServicesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListServices not implemented")
 }
+func (UnimplementedCalendarServiceServer) CreateService(context.Context, *CreateServiceRequest) (*CreateServiceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateService not implemented")
+}
+func (UnimplementedCalendarServiceServer) ListProviders(context.Context, *ListProvidersRequest) (*ListProvidersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListProviders not implemented")
+}
 func (UnimplementedCalendarServiceServer) ListProviderServices(context.Context, *ListProviderServicesRequest) (*ListProviderServicesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListProviderServices not implemented")
+}
+func (UnimplementedCalendarServiceServer) SetProviderServices(context.Context, *SetProviderServicesRequest) (*SetProviderServicesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetProviderServices not implemented")
+}
+func (UnimplementedCalendarServiceServer) UpdateProviderProfile(context.Context, *UpdateProviderProfileRequest) (*UpdateProviderProfileResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateProviderProfile not implemented")
 }
 func (UnimplementedCalendarServiceServer) mustEmbedUnimplementedCalendarServiceServer() {}
 
@@ -520,6 +636,24 @@ func _CalendarService_CancelBooking_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CalendarServiceServer).CancelBooking(ctx, req.(*CancelBookingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CalendarService_ConfirmBooking_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfirmBookingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).ConfirmBooking(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/ConfirmBooking",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).ConfirmBooking(ctx, req.(*ConfirmBookingRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -646,6 +780,24 @@ func _CalendarService_ListBookings_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CalendarServiceServer).ListBookings(ctx, req.(*ListBookingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CalendarService_ListProviderBookings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProviderBookingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).ListProviderBookings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/ListProviderBookings",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).ListProviderBookings(ctx, req.(*ListProviderBookingsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -794,6 +946,24 @@ func _CalendarService_DeleteSlot_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CalendarService_ListProviderSlots_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProviderSlotsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).ListProviderSlots(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/ListProviderSlots",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).ListProviderSlots(ctx, req.(*ListProviderSlotsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CalendarService_ListServices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListServicesRequest)
 	if err := dec(in); err != nil {
@@ -812,6 +982,42 @@ func _CalendarService_ListServices_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CalendarService_CreateService_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateServiceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).CreateService(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/CreateService",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).CreateService(ctx, req.(*CreateServiceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CalendarService_ListProviders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProvidersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).ListProviders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/ListProviders",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).ListProviders(ctx, req.(*ListProvidersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CalendarService_ListProviderServices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListProviderServicesRequest)
 	if err := dec(in); err != nil {
@@ -826,6 +1032,42 @@ func _CalendarService_ListProviderServices_Handler(srv interface{}, ctx context.
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CalendarServiceServer).ListProviderServices(ctx, req.(*ListProviderServicesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CalendarService_SetProviderServices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetProviderServicesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).SetProviderServices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/SetProviderServices",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).SetProviderServices(ctx, req.(*SetProviderServicesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CalendarService_UpdateProviderProfile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateProviderProfileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CalendarServiceServer).UpdateProviderProfile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/calendar.v1.CalendarService/UpdateProviderProfile",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CalendarServiceServer).UpdateProviderProfile(ctx, req.(*UpdateProviderProfileRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -862,6 +1104,10 @@ var CalendarService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _CalendarService_CancelBooking_Handler,
 		},
 		{
+			MethodName: "ConfirmBooking",
+			Handler:    _CalendarService_ConfirmBooking_Handler,
+		},
+		{
 			MethodName: "CheckAvailability",
 			Handler:    _CalendarService_CheckAvailability_Handler,
 		},
@@ -888,6 +1134,10 @@ var CalendarService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListBookings",
 			Handler:    _CalendarService_ListBookings_Handler,
+		},
+		{
+			MethodName: "ListProviderBookings",
+			Handler:    _CalendarService_ListProviderBookings_Handler,
 		},
 		{
 			MethodName: "ListProviderSchedules",
@@ -922,12 +1172,32 @@ var CalendarService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _CalendarService_DeleteSlot_Handler,
 		},
 		{
+			MethodName: "ListProviderSlots",
+			Handler:    _CalendarService_ListProviderSlots_Handler,
+		},
+		{
 			MethodName: "ListServices",
 			Handler:    _CalendarService_ListServices_Handler,
 		},
 		{
+			MethodName: "CreateService",
+			Handler:    _CalendarService_CreateService_Handler,
+		},
+		{
+			MethodName: "ListProviders",
+			Handler:    _CalendarService_ListProviders_Handler,
+		},
+		{
 			MethodName: "ListProviderServices",
 			Handler:    _CalendarService_ListProviderServices_Handler,
+		},
+		{
+			MethodName: "SetProviderServices",
+			Handler:    _CalendarService_SetProviderServices_Handler,
+		},
+		{
+			MethodName: "UpdateProviderProfile",
+			Handler:    _CalendarService_UpdateProviderProfile_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

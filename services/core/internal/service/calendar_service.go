@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/datatypes"
@@ -862,6 +865,39 @@ func (s *CalendarService) CancelBooking(
 	return resp, nil
 }
 
+// ConfirmBooking — подтвердить бронирование (для действий провайдера/админа).
+func (s *CalendarService) ConfirmBooking(
+	ctx context.Context,
+	req *calendarpb.ConfirmBookingRequest,
+) (*calendarpb.ConfirmBookingResponse, error) {
+	if req.GetBookingId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "booking_id is required")
+	}
+
+	booking, err := s.bookingRepo.GetByID(ctx, req.GetBookingId())
+	if err != nil {
+		s.logErr("ConfirmBooking", err, "stage", "get booking", "booking_id", req.GetBookingId())
+		return nil, status.Errorf(codes.NotFound, "booking not found: %v", err)
+	}
+
+	if booking.Status == model.BookingStatusCancelled {
+		return nil, status.Error(codes.FailedPrecondition, "booking is cancelled")
+	}
+	if booking.Status == model.BookingStatusConfirmed {
+		return &calendarpb.ConfirmBookingResponse{Booking: s.mapBooking(ctx, booking)}, nil
+	}
+
+	if err := s.bookingRepo.UpdateStatus(ctx, req.GetBookingId(), model.BookingStatusConfirmed, nil); err != nil {
+		s.logErr("ConfirmBooking", err, "stage", "update status", "booking_id", req.GetBookingId())
+		return nil, status.Errorf(codes.Internal, "confirm booking: %v", err)
+	}
+
+	booking.Status = model.BookingStatusConfirmed
+	booking.CancelledAt = nil
+
+	return &calendarpb.ConfirmBookingResponse{Booking: s.mapBooking(ctx, booking)}, nil
+}
+
 // ListBookings — список бронирований клиента.
 func (s *CalendarService) ListBookings(
 	ctx context.Context,
@@ -898,6 +934,48 @@ func (s *CalendarService) ListBookings(
 		TotalCount: int32(total),
 	}
 
+	for i := range bookings {
+		resp.Bookings = append(resp.Bookings, s.mapBooking(ctx, &bookings[i]))
+	}
+
+	return resp, nil
+}
+
+// ListProviderBookings — список бронирований провайдера за период.
+func (s *CalendarService) ListProviderBookings(
+	ctx context.Context,
+	req *calendarpb.ListProviderBookingsRequest,
+) (*calendarpb.ListProviderBookingsResponse, error) {
+	if req.GetProviderId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "provider_id is required")
+	}
+
+	page := req.GetPage()
+	if page <= 0 {
+		page = 1
+	}
+	size := req.GetPageSize()
+	if size <= 0 {
+		size = 20
+	}
+	offset := (int(page) - 1) * int(size)
+
+	from := req.GetFrom().AsTime()
+	to := req.GetTo().AsTime()
+	if !to.IsZero() && !from.IsZero() && !to.After(from) {
+		return nil, status.Error(codes.InvalidArgument, "to must be after from")
+	}
+
+	bookings, total, err := s.bookingRepo.ListByProviderAndRange(ctx, req.GetProviderId(), from, to, int(size), offset)
+	if err != nil {
+		s.logErr("ListProviderBookings", err, "stage", "list bookings", "provider_id", req.GetProviderId())
+		return nil, status.Errorf(codes.Internal, "list provider bookings: %v", err)
+	}
+
+	resp := &calendarpb.ListProviderBookingsResponse{
+		Bookings:   make([]*commonpb.Booking, 0, len(bookings)),
+		TotalCount: int32(total),
+	}
 	for i := range bookings {
 		resp.Bookings = append(resp.Bookings, s.mapBooking(ctx, &bookings[i]))
 	}
@@ -1201,6 +1279,64 @@ func (s *CalendarService) BulkCancelProviderSlots(
 	return resp, nil
 }
 
+// ListProviderSlots — список слотов провайдера (все статусы) в окне с опциональными бронями.
+func (s *CalendarService) ListProviderSlots(
+	ctx context.Context,
+	req *calendarpb.ListProviderSlotsRequest,
+) (*calendarpb.ListProviderSlotsResponse, error) {
+	if req.GetProviderId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "provider_id is required")
+	}
+	if req.GetFrom() == nil || req.GetTo() == nil {
+		return nil, status.Error(codes.InvalidArgument, "from and to are required")
+	}
+	from := req.GetFrom().AsTime()
+	to := req.GetTo().AsTime()
+	if !to.After(from) {
+		return nil, status.Error(codes.InvalidArgument, "to must be after from")
+	}
+
+	page := req.GetPage()
+	if page <= 0 {
+		page = 1
+	}
+	size := req.GetPageSize()
+	if size <= 0 {
+		size = 50
+	}
+	offset := (int(page) - 1) * int(size)
+
+	slots, total, err := s.slotRepo.ListByProviderRange(ctx, req.GetProviderId(), from, to, int(size), offset)
+	if err != nil {
+		s.logErr("ListProviderSlots", err, "stage", "list slots", "provider_id", req.GetProviderId())
+		return nil, status.Errorf(codes.Internal, "list slots: %v", err)
+	}
+
+	bookingBySlot := map[string]*model.Booking{}
+	if req.GetIncludeBookings() {
+		bookings, _, berr := s.bookingRepo.ListByProviderAndRange(ctx, req.GetProviderId(), from, to, 0, 0)
+		if berr != nil {
+			s.logErr("ListProviderSlots", berr, "stage", "list bookings", "provider_id", req.GetProviderId())
+			return nil, status.Errorf(codes.Internal, "list bookings: %v", berr)
+		}
+		for i := range bookings {
+			bookingBySlot[bookings[i].SlotID.String()] = &bookings[i]
+		}
+	}
+
+	resp := &calendarpb.ListProviderSlotsResponse{Slots: make([]*calendarpb.SlotWithBooking, 0, len(slots)), TotalCount: int32(total)}
+	for i := range slots {
+		slotPB := mapSlot(&slots[i])
+		var bookingPB *commonpb.Booking
+		if b, ok := bookingBySlot[slots[i].ID.String()]; ok {
+			bookingPB = s.mapBooking(ctx, b)
+		}
+		resp.Slots = append(resp.Slots, &calendarpb.SlotWithBooking{Slot: slotPB, Booking: bookingPB})
+	}
+
+	return resp, nil
+}
+
 // CreateSlot — добавить слот провайдера.
 func (s *CalendarService) CreateSlot(
 	ctx context.Context,
@@ -1272,6 +1408,9 @@ func (s *CalendarService) UpdateSlot(
 	if err := s.ensureProviderRole(ctx, slot.ProviderID.String()); err != nil {
 		return nil, err
 	}
+	if slot.Status == model.TimeSlotStatusBooked {
+		return nil, status.Error(codes.FailedPrecondition, "cannot update a booked slot")
+	}
 
 	if req.GetServiceId() != "" {
 		id, err := uuid.Parse(req.GetServiceId())
@@ -1322,6 +1461,9 @@ func (s *CalendarService) DeleteSlot(
 	if err := s.ensureProviderRole(ctx, slot.ProviderID.String()); err != nil {
 		return nil, err
 	}
+	if slot.Status == model.TimeSlotStatusBooked {
+		return nil, status.Error(codes.FailedPrecondition, "cannot delete a booked slot")
+	}
 
 	if err := s.slotRepo.Delete(ctx, req.GetSlotId()); err != nil {
 		s.logErr("DeleteSlot", err, "stage", "delete slot")
@@ -1370,6 +1512,47 @@ func (s *CalendarService) ListServices(
 	return resp, nil
 }
 
+func (s *CalendarService) CreateService(
+	ctx context.Context,
+	req *calendarpb.CreateServiceRequest,
+) (*calendarpb.CreateServiceResponse, error) {
+	if s.serviceRepo == nil {
+		return nil, status.Error(codes.Internal, "service repository is not configured")
+	}
+	if req == nil || strings.TrimSpace(req.GetName()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
+	}
+
+	var dur *int64
+	if req.GetDefaultDurationMin() > 0 {
+		v := int64(req.GetDefaultDurationMin())
+		dur = &v
+	}
+	isActive := req.GetIsActive()
+	if req == nil {
+		isActive = true
+	}
+
+	svc := &model.Service{
+		Name:               strings.TrimSpace(req.GetName()),
+		Description:        req.GetDescription(),
+		DefaultDurationMin: dur,
+		IsActive:           isActive,
+	}
+
+	if svc.IsActive == false && req == nil {
+		svc.IsActive = true
+	}
+
+	if err := s.serviceRepo.Create(ctx, svc); err != nil {
+		s.logErr("CreateService", err, "stage", "create service")
+		return nil, status.Errorf(codes.Internal, "create service: %v", err)
+	}
+
+	s.logInfo("CreateService", "service_id", svc.ID.String(), "name", svc.Name)
+	return &calendarpb.CreateServiceResponse{Service: mapService(svc)}, nil
+}
+
 func (s *CalendarService) ListProviderServices(
 	ctx context.Context,
 	req *calendarpb.ListProviderServicesRequest,
@@ -1386,6 +1569,9 @@ func (s *CalendarService) ListProviderServices(
 		s.logErr("ListProviderServices", err, "stage", "get provider", "provider_id", req.GetProviderId())
 		return nil, status.Errorf(codes.NotFound, "provider not found: %v", err)
 	}
+	if err := s.maybeCreateProviderServiceFromMetadata(ctx, provider); err != nil {
+		s.logErr("ListProviderServices", err, "stage", "maybe create service", "provider_id", req.GetProviderId())
+	}
 
 	providerID, err := uuid.Parse(req.GetProviderId())
 	if err != nil {
@@ -1396,6 +1582,13 @@ func (s *CalendarService) ListProviderServices(
 		s.logErr("ListProviderServices", err, "stage", "list provider services", "provider_id", req.GetProviderId())
 		return nil, status.Errorf(codes.Internal, "list provider services: %v", err)
 	}
+	if len(services) == 0 {
+		if svc, err := s.ensureDefaultServiceForProvider(ctx, provider); err != nil {
+			s.logErr("ListProviderServices", err, "stage", "ensure default service", "provider_id", req.GetProviderId())
+		} else {
+			services = append(services, *svc)
+		}
+	}
 
 	resp := &calendarpb.ListProviderServicesResponse{
 		Provider: &commonpb.Provider{Id: provider.ID.String(), DisplayName: provider.DisplayName, Description: provider.Description},
@@ -1404,6 +1597,149 @@ func (s *CalendarService) ListProviderServices(
 	for i := range services {
 		resp.Services = append(resp.Services, mapService(&services[i]))
 	}
+	s.logInfo("ListProviderServices", "provider_id", req.GetProviderId(), "services", len(resp.Services))
+	return resp, nil
+}
+
+func (s *CalendarService) SetProviderServices(
+	ctx context.Context,
+	req *calendarpb.SetProviderServicesRequest,
+) (*calendarpb.SetProviderServicesResponse, error) {
+	if req == nil || req.GetProviderId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "provider_id is required")
+	}
+	if s.providerRepo == nil || s.serviceRepo == nil {
+		return nil, status.Error(codes.Internal, "repositories are not configured")
+	}
+
+	provider, err := s.providerRepo.GetByID(ctx, req.GetProviderId())
+	if err != nil {
+		s.logErr("SetProviderServices", err, "stage", "get provider", "provider_id", req.GetProviderId())
+		return nil, status.Errorf(codes.NotFound, "provider not found: %v", err)
+	}
+
+	providerID, err := uuid.Parse(req.GetProviderId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid provider_id")
+	}
+
+	serviceIDs := make([]uuid.UUID, 0, len(req.GetServiceIds()))
+	for _, sid := range req.GetServiceIds() {
+		id, perr := uuid.Parse(sid)
+		if perr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid service_id: %s", sid)
+		}
+		serviceIDs = append(serviceIDs, id)
+	}
+
+	services, err := s.serviceRepo.ListByIDs(ctx, serviceIDs)
+	if err != nil {
+		s.logErr("SetProviderServices", err, "stage", "list services", "provider_id", req.GetProviderId())
+		return nil, status.Errorf(codes.Internal, "list services: %v", err)
+	}
+	if len(services) != len(serviceIDs) {
+		return nil, status.Error(codes.InvalidArgument, "one or more service_ids not found")
+	}
+
+	if err := s.providerRepo.SetServices(ctx, providerID, serviceIDs); err != nil {
+		s.logErr("SetProviderServices", err, "stage", "set services", "provider_id", req.GetProviderId())
+		return nil, status.Errorf(codes.Internal, "set provider services: %v", err)
+	}
+
+	serviceByID := make(map[string]model.Service, len(services))
+	for i := range services {
+		serviceByID[services[i].ID.String()] = services[i]
+	}
+	respServices := make([]*commonpb.Service, 0, len(serviceIDs))
+	for _, sid := range serviceIDs {
+		if sv, ok := serviceByID[sid.String()]; ok {
+			respServices = append(respServices, mapService(&sv))
+		}
+	}
+
+	resp := &calendarpb.SetProviderServicesResponse{
+		Provider: mapProvider(provider),
+		Services: respServices,
+	}
+
+	s.logInfo("SetProviderServices", "provider_id", providerID.String(), "service_ids", req.GetServiceIds())
+	return resp, nil
+}
+
+func (s *CalendarService) ListProviders(
+	ctx context.Context,
+	req *calendarpb.ListProvidersRequest,
+) (*calendarpb.ListProvidersResponse, error) {
+	if s.providerRepo == nil {
+		return nil, status.Error(codes.Internal, "provider repository is not configured")
+	}
+
+	var serviceIDPtr *uuid.UUID
+	if req.GetServiceId() != "" {
+		id, err := uuid.Parse(req.GetServiceId())
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, "invalid service_id")
+		}
+		serviceIDPtr = &id
+	}
+
+	s.logInfo("ListProviders", "service_id", req.GetServiceId(), "page", req.GetPage(), "size", req.GetPageSize())
+
+	page := req.GetPage()
+	if page <= 0 {
+		page = 1
+	}
+	size := req.GetPageSize()
+	if size <= 0 {
+		size = 50
+	}
+	offset := (int(page) - 1) * int(size)
+
+	providers, total, err := s.providerRepo.List(ctx, serviceIDPtr, int(size), offset)
+	if err != nil {
+		s.logErr("ListProviders", err, "stage", "list providers")
+		return nil, status.Errorf(codes.Internal, "list providers: %v", err)
+	}
+
+	resp := &calendarpb.ListProvidersResponse{Providers: make([]*commonpb.Provider, 0, len(providers)), TotalCount: int32(total)}
+	for i := range providers {
+		resp.Providers = append(resp.Providers, mapProvider(&providers[i]))
+	}
+	s.logInfo("ListProviders", "service_id", req.GetServiceId(), "page", page, "size", size, "returned", len(resp.Providers), "total", total)
+	return resp, nil
+}
+
+func (s *CalendarService) UpdateProviderProfile(
+	ctx context.Context,
+	req *calendarpb.UpdateProviderProfileRequest,
+) (*calendarpb.UpdateProviderProfileResponse, error) {
+	if req.GetProviderId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "provider_id is required")
+	}
+	s.logInfo("UpdateProviderProfile", "provider_id", req.GetProviderId(), "display_name", req.GetDisplayName(), "description", req.GetDescription())
+	prov, err := s.providerRepo.GetByID(ctx, req.GetProviderId())
+	if err != nil {
+		s.logErr("UpdateProviderProfile", err, "stage", "get provider", "provider_id", req.GetProviderId())
+		return nil, status.Errorf(codes.NotFound, "provider not found: %v", err)
+	}
+	if err := s.ensureProviderRole(ctx, prov.ID.String()); err != nil {
+		return nil, err
+	}
+
+	if req.GetDisplayName() != "" {
+		prov.DisplayName = req.GetDisplayName()
+	}
+	if req.GetDescription() != "" {
+		prov.Description = req.GetDescription()
+	}
+
+	if err := s.providerRepo.Update(ctx, prov); err != nil {
+		s.logErr("UpdateProviderProfile", err, "stage", "update provider")
+		return nil, status.Errorf(codes.Internal, "update provider: %v", err)
+	}
+
+	resp := &calendarpb.UpdateProviderProfileResponse{Provider: mapProvider(prov)}
+	s.logInfo("UpdateProviderProfile", "provider_id", req.GetProviderId(), "result_display_name", prov.DisplayName)
 	return resp, nil
 }
 
@@ -1422,6 +1758,13 @@ func mapService(sv *model.Service) *commonpb.Service {
 		DefaultDurationMin: d,
 		IsActive:           sv.IsActive,
 	}
+}
+
+func mapProvider(p *model.Provider) *commonpb.Provider {
+	if p == nil {
+		return nil
+	}
+	return &commonpb.Provider{Id: p.ID.String(), DisplayName: p.DisplayName, Description: p.Description}
 }
 
 func mapSlotStatus(s model.TimeSlotStatus) commonpb.SlotStatus {
@@ -1682,6 +2025,76 @@ func dateToProto(d *datatypes.Date) *timestamppb.Timestamp {
 	return timestamppb.New(dateOnly)
 }
 
+func firstMetadata(md metadata.MD, key string) string {
+	if len(md) == 0 {
+		return ""
+	}
+	vals := md.Get(key)
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
+}
+
+// maybeCreateProviderServiceFromMetadata позволяет создавать услугу и привязывать её к провайдеру,
+// если gRPC-запрос пришёл с метаданными:
+// - x-create-service-name (обязательный)
+// - x-create-service-description (опциональный)
+// - x-create-service-duration-min (опциональный, int)
+// - x-create-service-active (опциональный, bool, по умолчанию true).
+func (s *CalendarService) maybeCreateProviderServiceFromMetadata(ctx context.Context, provider *model.Provider) error {
+	if provider == nil || s.db == nil {
+		return nil
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil
+	}
+
+	name := strings.TrimSpace(firstMetadata(md, "x-create-service-name"))
+	if name == "" {
+		return nil
+	}
+	desc := strings.TrimSpace(firstMetadata(md, "x-create-service-description"))
+	durationStr := strings.TrimSpace(firstMetadata(md, "x-create-service-duration-min"))
+	activeStr := strings.TrimSpace(firstMetadata(md, "x-create-service-active"))
+
+	var duration *int64
+	if durationStr != "" {
+		if v, err := strconv.ParseInt(durationStr, 10, 64); err == nil && v > 0 {
+			duration = &v
+		} else if err != nil {
+			return fmt.Errorf("parse duration: %w", err)
+		}
+	}
+	isActive := true
+	if activeStr != "" {
+		if v, err := strconv.ParseBool(activeStr); err == nil {
+			isActive = v
+		} else {
+			return fmt.Errorf("parse is_active: %w", err)
+		}
+	}
+
+	svc := model.Service{
+		Name:               name,
+		Description:        desc,
+		DefaultDurationMin: duration,
+		IsActive:           isActive,
+	}
+	if err := s.db.WithContext(ctx).Create(&svc).Error; err != nil {
+		return fmt.Errorf("create service: %w", err)
+	}
+
+	link := model.ProviderService{ProviderID: provider.ID, ServiceID: svc.ID}
+	if err := s.db.WithContext(ctx).Where("provider_id = ? AND service_id = ?", provider.ID, svc.ID).FirstOrCreate(&link).Error; err != nil {
+		return fmt.Errorf("link provider service: %w", err)
+	}
+
+	s.logInfo("CreateProviderService", "provider_id", provider.ID.String(), "service_id", svc.ID.String(), "service_name", svc.Name)
+	return nil
+}
+
 func (s *CalendarService) ensureProviderRole(ctx context.Context, providerID string) error {
 	if s.providerRepo == nil || s.userRepo == nil {
 		return nil
@@ -1695,7 +2108,38 @@ func (s *CalendarService) ensureProviderRole(ctx context.Context, providerID str
 		return status.Errorf(codes.PermissionDenied, "cannot verify provider role: %v", err)
 	}
 	if role != "provider" {
+		s.logErr("ensureProviderRole", fmt.Errorf("unexpected role"), "provider_id", providerID, "user_id", provider.UserID.String(), "role", role)
 		return status.Error(codes.PermissionDenied, "only providers can manage schedules and slots")
 	}
+	s.logInfo("ensureProviderRole", "provider_id", providerID, "user_id", provider.UserID.String(), "role", role)
 	return nil
+}
+
+// ensureDefaultServiceForProvider создаёт базовую услугу и привязывает её к провайдеру, если у него нет услуг.
+func (s *CalendarService) ensureDefaultServiceForProvider(ctx context.Context, provider *model.Provider) (*model.Service, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("provider is nil")
+	}
+	if s.db == nil {
+		return nil, fmt.Errorf("db is not configured")
+	}
+
+	name := strings.TrimSpace(provider.DisplayName)
+	if name == "" {
+		name = "Услуга"
+	}
+	svc := model.Service{
+		Name:        name,
+		Description: provider.Description,
+		IsActive:    true,
+	}
+	if err := s.db.WithContext(ctx).Create(&svc).Error; err != nil {
+		return nil, fmt.Errorf("create service: %w", err)
+	}
+	link := model.ProviderService{ProviderID: provider.ID, ServiceID: svc.ID}
+	if err := s.db.WithContext(ctx).Where("provider_id = ? AND service_id = ?", provider.ID, svc.ID).FirstOrCreate(&link).Error; err != nil {
+		return nil, fmt.Errorf("link provider service: %w", err)
+	}
+	s.logInfo("ensureDefaultServiceForProvider", "provider_id", provider.ID.String(), "service_id", svc.ID.String(), "service_name", svc.Name)
+	return &svc, nil
 }

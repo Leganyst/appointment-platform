@@ -92,3 +92,28 @@ async def get_profile(
     req = identity_pb2.GetProfileRequest(telegram_id=telegram_id)
     resp = await stub.GetProfile(req, metadata=metadata, timeout=timeout)
     return _to_user(resp.user)
+
+
+async def reset_account(
+    stub: identity_pb2_grpc.IdentityServiceStub,
+    *,
+    telegram_id: int,
+    metadata=None,
+    timeout: float | None = None,
+) -> IdentityUser:
+    req = identity_pb2.GetProfileRequest(telegram_id=telegram_id)
+
+    # Dynamic call: generated Python stub may not include ResetAccount yet.
+    channel = getattr(stub, "_channel", None)
+    if channel is None:
+        channel = getattr(getattr(stub, "GetProfile", None), "_channel", None)
+    if channel is None:
+        raise AttributeError("IdentityServiceStub has no channel reference")
+
+    call = channel.unary_unary(
+        "/identity.v1.IdentityService/ResetAccount",
+        request_serializer=lambda m: m.SerializeToString(),
+        response_deserializer=identity_pb2.RegisterUserResponse.FromString,
+    )
+    resp = await call(req, metadata=metadata, timeout=timeout)
+    return _to_user(resp.user)

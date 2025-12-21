@@ -1,11 +1,13 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+import logging
 from typing import Optional
 
 from telegram_bot.dto import BookingDTO, ProviderDTO, ProviderSlotDTO, ServiceDTO, SlotDTO
 from telegram_bot.generated import calendar_pb2, calendar_pb2_grpc, common_pb2
 from telegram_bot.utils.time import to_datetime, to_timestamp
 
-DEFAULT_SLOTS_WINDOW_DAYS = 3
+DEFAULT_SLOTS_WINDOW_DAYS = 365  # Расширили диапазон поиска до года
+logger = logging.getLogger(__name__)
 
 
 def _set_ts_field(field, dt) -> None:
@@ -370,3 +372,103 @@ async def update_provider_profile(
     )
     resp = await stub.UpdateProviderProfile(req, metadata=metadata, timeout=timeout)
     return _to_provider(resp.provider)
+
+
+async def create_week_slots(
+    stub: calendar_pb2_grpc.CalendarServiceStub,
+    *,
+    provider_id: str,
+    service_id: str,
+    weekday_indexes: list[int],
+    times: list[time],
+    date_from,
+    date_to,
+    duration_min: int,
+    tz_offset_min: int,
+    metadata,
+    timeout: float,
+) -> list[SlotDTO]:
+    """Create slots for a week-style template across a date window.
+
+    The window is `[date_from, date_to)` (date_to is exclusive) to match the
+    "N days ahead" wording in the bot UI. Only dates whose weekday is listed in
+    `weekday_indexes` are populated.
+    """
+
+    start_date = date_from.date() if isinstance(date_from, datetime) else date_from
+    end_date = date_to.date() if isinstance(date_to, datetime) else date_to
+    if end_date <= start_date:
+        return []
+
+    tzinfo_local = timezone(timedelta(minutes=tz_offset_min))
+
+    weekdays: set[int] = set()
+    for d in (weekday_indexes or []):
+        try:
+            weekdays.add(int(d))
+        except (TypeError, ValueError):
+            continue
+
+    prepared_times: list[time] = []
+    for t in times or []:
+        if isinstance(t, time):
+            prepared_times.append(t)
+            continue
+        # Accept strings like "10:00" defensively.
+        try:
+            parsed = datetime.strptime(str(t), "%H:%M").time()
+        except ValueError:
+            continue
+        prepared_times.append(parsed)
+
+    if not weekdays or not prepared_times:
+        logger.warning(
+            "create_week_slots: skip because weekdays or times empty provider=%s service=%s weekdays=%s times=%s",
+            provider_id,
+            service_id,
+            weekday_indexes,
+            times,
+        )
+        return []
+
+    logger.info(
+        "create_week_slots: start provider=%s service=%s from=%s to=%s tz_offset=%s weekdays=%s times=%s duration=%s",
+        provider_id,
+        service_id,
+        start_date,
+        end_date,
+        tz_offset_min,
+        sorted(weekdays),
+        [t.strftime("%H:%M") for t in prepared_times],
+        duration_min,
+    )
+
+    created: list[SlotDTO] = []
+    current = start_date
+    while current < end_date:
+        if current.weekday() in weekdays:
+            for t in prepared_times:
+                start_local = datetime.combine(current, t, tzinfo_local)
+                end_local = start_local + timedelta(minutes=duration_min)
+                req = calendar_pb2.CreateSlotRequest(
+                    provider_id=provider_id,
+                    service_id=service_id,
+                    range=common_pb2.TimeRange(
+                        start=to_timestamp(start_local.astimezone(timezone.utc)),
+                        end=to_timestamp(end_local.astimezone(timezone.utc)),
+                    ),
+                )
+                resp = await stub.CreateSlot(req, metadata=metadata, timeout=timeout)
+                created.append(_to_slot(resp.slot))
+        current += timedelta(days=1)
+
+    logger.info(
+        "create_week_slots: done provider=%s service=%s from=%s to=%s created=%s",
+        provider_id,
+        service_id,
+        start_date,
+        end_date,
+        len(created),
+    )
+
+    return created

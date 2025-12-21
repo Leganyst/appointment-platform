@@ -23,6 +23,13 @@ type BookingRepository interface {
 		from, to time.Time,
 		limit, offset int,
 	) ([]model.Booking, int64, error)
+	// Список бронирований провайдера за период с пагинацией.
+	ListByProviderAndRange(
+		ctx context.Context,
+		providerID string,
+		from, to time.Time,
+		limit, offset int,
+	) ([]model.Booking, int64, error)
 }
 
 // Реализация на GORM.
@@ -91,6 +98,39 @@ func (r *GormBookingRepository) ListByClientAndRange(
 	}
 
 	if err := q.Order("created_at DESC").Find(&bookings).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return bookings, total, nil
+}
+
+func (r *GormBookingRepository) ListByProviderAndRange(
+	ctx context.Context,
+	providerID string,
+	from, to time.Time,
+	limit, offset int,
+) ([]model.Booking, int64, error) {
+	var (
+		bookings []model.Booking
+		total    int64
+	)
+
+	q := r.db.WithContext(ctx).
+		Model(&model.Booking{}).
+		Joins("JOIN time_slots ON time_slots.id = bookings.slot_id").
+		Where("time_slots.provider_id = ?", providerID).
+		Where("time_slots.starts_at >= ? AND time_slots.ends_at <= ?", from, to).
+		Preload("Slot")
+
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if limit > 0 {
+		q = q.Limit(limit).Offset(offset)
+	}
+
+	if err := q.Order("time_slots.starts_at DESC").Find(&bookings).Error; err != nil {
 		return nil, 0, err
 	}
 

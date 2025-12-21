@@ -37,6 +37,9 @@ async def main():
 
     bot = create_bot(settings.bot_token)
     dispatcher = setup_dispatcher(None)
+    # Сохраняем диспетчер на боте для совместимости с существующими хендлерами
+    # (они читают settings/grpc_clients через message.bot.dispatcher.workflow_data).
+    bot.dispatcher = dispatcher  # type: ignore[attr-defined]
     dispatcher.workflow_data["settings"] = settings
     dispatcher.workflow_data["grpc_clients"] = clients
 

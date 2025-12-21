@@ -1,12 +1,58 @@
-# Python
+# ---- Local env ----
+*.env
+app/telegram_bot/.env
+
+# ---- Python ----
 __pycache__/
 *.py[cod]
+*.pyo
 *.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.installed.cfg
+*.manifest
+*.spec
+pip-wheel-metadata/
+.venv/
+venv/
+ENV/
+env/
+*.log
+.coverage
+htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pyre/
+.pytype/
+.ipynb_checkpoints
+.cache/
 
-# OS / editors
+# ---- Go ----
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+*.pprof
+*.cover
+*.log
+/vendor/
+/bin/
+/build/
+/dist/
+
+# Go module / workspace
+go.work
+
+# ---- OS / editors ----
 .DS_Store
 Thumbs.db
 .idea/

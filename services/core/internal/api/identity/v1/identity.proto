@@ -4,6 +4,8 @@ package identity.v1;
 
 option go_package = "github.com/Leganyst/appointment-platform/internal/api/identity/v1;identitypb";
 
+import "common/v1/common.proto";
+
 // Базовая информация о пользователе Telegram в системе.
 message User {
   string id = 1; // внутренний UUID
@@ -74,6 +76,19 @@ message FindProviderByPhoneResponse {
   User user = 1;
 }
 
+// Контекст пользователя по Telegram ID, для быстрых вызовов из внешних клиентов (например, TG-бот).
+message GetUserContextRequest {
+  int64 telegram_id = 1;
+  // Если true и пользователь является провайдером, вернёт профиль провайдера (display_name/description).
+  bool include_provider_profile = 2;
+}
+
+message GetUserContextResponse {
+  User user = 1;
+  // Опционально: профиль провайдера, если запрошен и доступен.
+  common.v1.Provider provider = 2;
+}
+
 // IdentityService предоставляет методы регистрации и управления профилем пользователя.
 service IdentityService {
   // Регистрация пользователя по Telegram ID или возврат уже существующего.
@@ -87,4 +102,11 @@ service IdentityService {
 
   // Поиск провайдера по номеру телефона.
   rpc FindProviderByPhone(FindProviderByPhoneRequest) returns (FindProviderByPhoneResponse);
+
+  // Контекст пользователя по Telegram ID (User + опционально профиль провайдера).
+  rpc GetUserContext(GetUserContextRequest) returns (GetUserContextResponse);
+
+  // Сброс аккаунта (очистка роли/контактов) по Telegram ID.
+  // Использует существующие типы запросов/ответов для совместимости клиентов.
+  rpc ResetAccount(GetProfileRequest) returns (RegisterUserResponse);
 }

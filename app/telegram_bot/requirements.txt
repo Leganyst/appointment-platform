@@ -12,7 +12,8 @@ idna==3.11
 magic-filter==1.0.12
 multidict==6.7.0
 propcache==0.4.1
-grpcio==1.67.0
+grpcio==1.76.0
+protobuf==6.31.1
 psycopg2-binary==2.9.10
 SQLAlchemy==2.0.45
 typing_extensions==4.15.0

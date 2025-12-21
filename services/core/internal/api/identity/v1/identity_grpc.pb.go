@@ -28,6 +28,11 @@ type IdentityServiceClient interface {
 	GetProfile(ctx context.Context, in *GetProfileRequest, opts ...grpc.CallOption) (*GetProfileResponse, error)
 	// Поиск провайдера по номеру телефона.
 	FindProviderByPhone(ctx context.Context, in *FindProviderByPhoneRequest, opts ...grpc.CallOption) (*FindProviderByPhoneResponse, error)
+	// Контекст пользователя по Telegram ID (User + опционально профиль провайдера).
+	GetUserContext(ctx context.Context, in *GetUserContextRequest, opts ...grpc.CallOption) (*GetUserContextResponse, error)
+	// Сброс аккаунта (очистка роли/контактов) по Telegram ID.
+	// Использует существующие типы запросов/ответов для совместимости клиентов.
+	ResetAccount(ctx context.Context, in *GetProfileRequest, opts ...grpc.CallOption) (*RegisterUserResponse, error)
 }
 
 type identityServiceClient struct {
@@ -83,6 +88,24 @@ func (c *identityServiceClient) FindProviderByPhone(ctx context.Context, in *Fin
 	return out, nil
 }
 
+func (c *identityServiceClient) GetUserContext(ctx context.Context, in *GetUserContextRequest, opts ...grpc.CallOption) (*GetUserContextResponse, error) {
+	out := new(GetUserContextResponse)
+	err := c.cc.Invoke(ctx, "/identity.v1.IdentityService/GetUserContext", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *identityServiceClient) ResetAccount(ctx context.Context, in *GetProfileRequest, opts ...grpc.CallOption) (*RegisterUserResponse, error) {
+	out := new(RegisterUserResponse)
+	err := c.cc.Invoke(ctx, "/identity.v1.IdentityService/ResetAccount", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IdentityServiceServer is the server API for IdentityService service.
 // All implementations must embed UnimplementedIdentityServiceServer
 // for forward compatibility
@@ -97,6 +120,11 @@ type IdentityServiceServer interface {
 	GetProfile(context.Context, *GetProfileRequest) (*GetProfileResponse, error)
 	// Поиск провайдера по номеру телефона.
 	FindProviderByPhone(context.Context, *FindProviderByPhoneRequest) (*FindProviderByPhoneResponse, error)
+	// Контекст пользователя по Telegram ID (User + опционально профиль провайдера).
+	GetUserContext(context.Context, *GetUserContextRequest) (*GetUserContextResponse, error)
+	// Сброс аккаунта (очистка роли/контактов) по Telegram ID.
+	// Использует существующие типы запросов/ответов для совместимости клиентов.
+	ResetAccount(context.Context, *GetProfileRequest) (*RegisterUserResponse, error)
 	mustEmbedUnimplementedIdentityServiceServer()
 }
 
@@ -118,6 +146,12 @@ func (UnimplementedIdentityServiceServer) GetProfile(context.Context, *GetProfil
 }
 func (UnimplementedIdentityServiceServer) FindProviderByPhone(context.Context, *FindProviderByPhoneRequest) (*FindProviderByPhoneResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FindProviderByPhone not implemented")
+}
+func (UnimplementedIdentityServiceServer) GetUserContext(context.Context, *GetUserContextRequest) (*GetUserContextResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetUserContext not implemented")
+}
+func (UnimplementedIdentityServiceServer) ResetAccount(context.Context, *GetProfileRequest) (*RegisterUserResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResetAccount not implemented")
 }
 func (UnimplementedIdentityServiceServer) mustEmbedUnimplementedIdentityServiceServer() {}
 
@@ -222,6 +256,42 @@ func _IdentityService_FindProviderByPhone_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IdentityService_GetUserContext_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUserContextRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IdentityServiceServer).GetUserContext(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/identity.v1.IdentityService/GetUserContext",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IdentityServiceServer).GetUserContext(ctx, req.(*GetUserContextRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _IdentityService_ResetAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProfileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IdentityServiceServer).ResetAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/identity.v1.IdentityService/ResetAccount",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IdentityServiceServer).ResetAccount(ctx, req.(*GetProfileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // IdentityService_ServiceDesc is the grpc.ServiceDesc for IdentityService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -249,7 +319,15 @@ var IdentityService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "FindProviderByPhone",
 			Handler:    _IdentityService_FindProviderByPhone_Handler,
 		},
+		{
+			MethodName: "GetUserContext",
+			Handler:    _IdentityService_GetUserContext_Handler,
+		},
+		{
+			MethodName: "ResetAccount",
+			Handler:    _IdentityService_ResetAccount_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/api/identity/v1/identity.proto",
+	Metadata: "identity/v1/identity.proto",
 }

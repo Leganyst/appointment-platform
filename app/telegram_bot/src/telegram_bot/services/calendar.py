@@ -1,13 +1,20 @@
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
-
-import grpc
+from datetime import datetime, time, timedelta, timezone
+import logging
+from typing import Optional
 
 from telegram_bot.dto import BookingDTO, ProviderDTO, ProviderSlotDTO, ServiceDTO, SlotDTO
 from telegram_bot.generated import calendar_pb2, calendar_pb2_grpc, common_pb2
 from telegram_bot.utils.time import to_datetime, to_timestamp
 
-DEFAULT_SLOTS_WINDOW_DAYS = 3
+DEFAULT_SLOTS_WINDOW_DAYS = 365  # Расширили диапазон поиска до года
+logger = logging.getLogger(__name__)
+
+
+def _set_ts_field(field, dt) -> None:
+    ts = to_timestamp(dt)
+    if ts is None:
+        return
+    field.CopyFrom(ts)
 
 
 def _to_service(pb: common_pb2.Service) -> ServiceDTO:
@@ -101,6 +108,40 @@ async def list_provider_services(
     return provider, [_to_service(s) for s in resp.services]
 
 
+async def create_service(
+    stub: calendar_pb2_grpc.CalendarServiceStub,
+    *,
+    name: str,
+    description: str,
+    default_duration_min: int,
+    is_active: bool,
+    metadata,
+    timeout: float,
+) -> ServiceDTO:
+    req = calendar_pb2.CreateServiceRequest(
+        name=name,
+        description=description,
+        default_duration_min=default_duration_min,
+        is_active=is_active,
+    )
+    resp = await stub.CreateService(req, metadata=metadata, timeout=timeout)
+    return _to_service(resp.service)
+
+
+async def set_provider_services(
+    stub: calendar_pb2_grpc.CalendarServiceStub,
+    *,
+    provider_id: str,
+    service_ids: list[str],
+    metadata,
+    timeout: float,
+) -> tuple[ProviderDTO, list[ServiceDTO]]:
+    req = calendar_pb2.SetProviderServicesRequest(provider_id=provider_id, service_ids=service_ids)
+    resp = await stub.SetProviderServices(req, metadata=metadata, timeout=timeout)
+    provider = _to_provider(resp.provider) if resp.HasField("provider") else ProviderDTO(provider_id, "", "")
+    return provider, [_to_service(s) for s in resp.services]
+
+
 async def find_free_slots(
     stub: calendar_pb2_grpc.CalendarServiceStub,
     *,
@@ -145,8 +186,8 @@ async def list_provider_slots(
         page=page,
         page_size=page_size,
     )
-    req.__setattr__("from", to_timestamp(from_dt))
-    req.__setattr__("to", to_timestamp(to_dt))
+    _set_ts_field(getattr(req, "from"), from_dt)
+    _set_ts_field(getattr(req, "to"), to_dt)
     resp = await stub.ListProviderSlots(req, metadata=metadata, timeout=timeout)
     return ([_to_slot_with_booking(s) for s in resp.slots], resp.total_count)
 
@@ -231,10 +272,18 @@ async def list_provider_bookings(
     stub: calendar_pb2_grpc.CalendarServiceStub,
     *,
     provider_id: str,
+    from_dt: datetime | None = None,
+    to_dt: datetime | None = None,
     metadata,
     timeout: float,
 ) -> list[BookingDTO]:
-    req = calendar_pb2.ListProviderBookingsRequest(provider_id=provider_id)
+    now = datetime.now(timezone.utc)
+    start = from_dt or now
+    end = to_dt or (start + timedelta(days=30))
+    req = calendar_pb2.ListProviderBookingsRequest(
+        provider_id=provider_id,
+        **{"from": to_timestamp(start), "to": to_timestamp(end)},
+    )
     resp = await stub.ListProviderBookings(req, metadata=metadata, timeout=timeout)
     return [_to_booking(b) for b in resp.bookings]
 
@@ -280,10 +329,18 @@ async def list_bookings(
     stub: calendar_pb2_grpc.CalendarServiceStub,
     *,
     client_id: str,
+    from_dt: datetime | None = None,
+    to_dt: datetime | None = None,
     metadata,
     timeout: float,
 ) -> list[BookingDTO]:
-    req = calendar_pb2.ListBookingsRequest(client_id=client_id)
+    now = datetime.now(timezone.utc)
+    start = from_dt or (now - timedelta(days=30))
+    end = to_dt or (now + timedelta(days=60))
+    req = calendar_pb2.ListBookingsRequest(
+        client_id=client_id,
+        **{"from": to_timestamp(start), "to": to_timestamp(end)},
+    )
     resp = await stub.ListBookings(req, metadata=metadata, timeout=timeout)
     return [_to_booking(b) for b in resp.bookings]
 
@@ -315,3 +372,103 @@ async def update_provider_profile(
     )
     resp = await stub.UpdateProviderProfile(req, metadata=metadata, timeout=timeout)
     return _to_provider(resp.provider)
+
+
+async def create_week_slots(
+    stub: calendar_pb2_grpc.CalendarServiceStub,
+    *,
+    provider_id: str,
+    service_id: str,
+    weekday_indexes: list[int],
+    times: list[time],
+    date_from,
+    date_to,
+    duration_min: int,
+    tz_offset_min: int,
+    metadata,
+    timeout: float,
+) -> list[SlotDTO]:
+    """Create slots for a week-style template across a date window.
+
+    The window is `[date_from, date_to)` (date_to is exclusive) to match the
+    "N days ahead" wording in the bot UI. Only dates whose weekday is listed in
+    `weekday_indexes` are populated.
+    """
+
+    start_date = date_from.date() if isinstance(date_from, datetime) else date_from
+    end_date = date_to.date() if isinstance(date_to, datetime) else date_to
+    if end_date <= start_date:
+        return []
+
+    tzinfo_local = timezone(timedelta(minutes=tz_offset_min))
+
+    weekdays: set[int] = set()
+    for d in (weekday_indexes or []):
+        try:
+            weekdays.add(int(d))
+        except (TypeError, ValueError):
+            continue
+
+    prepared_times: list[time] = []
+    for t in times or []:
+        if isinstance(t, time):
+            prepared_times.append(t)
+            continue
+        # Accept strings like "10:00" defensively.
+        try:
+            parsed = datetime.strptime(str(t), "%H:%M").time()
+        except ValueError:
+            continue
+        prepared_times.append(parsed)
+
+    if not weekdays or not prepared_times:
+        logger.warning(
+            "create_week_slots: skip because weekdays or times empty provider=%s service=%s weekdays=%s times=%s",
+            provider_id,
+            service_id,
+            weekday_indexes,
+            times,
+        )
+        return []
+
+    logger.info(
+        "create_week_slots: start provider=%s service=%s from=%s to=%s tz_offset=%s weekdays=%s times=%s duration=%s",
+        provider_id,
+        service_id,
+        start_date,
+        end_date,
+        tz_offset_min,
+        sorted(weekdays),
+        [t.strftime("%H:%M") for t in prepared_times],
+        duration_min,
+    )
+
+    created: list[SlotDTO] = []
+    current = start_date
+    while current < end_date:
+        if current.weekday() in weekdays:
+            for t in prepared_times:
+                start_local = datetime.combine(current, t, tzinfo_local)
+                end_local = start_local + timedelta(minutes=duration_min)
+                req = calendar_pb2.CreateSlotRequest(
+                    provider_id=provider_id,
+                    service_id=service_id,
+                    range=common_pb2.TimeRange(
+                        start=to_timestamp(start_local.astimezone(timezone.utc)),
+                        end=to_timestamp(end_local.astimezone(timezone.utc)),
+                    ),
+                )
+                resp = await stub.CreateSlot(req, metadata=metadata, timeout=timeout)
+                created.append(_to_slot(resp.slot))
+        current += timedelta(days=1)
+
+    logger.info(
+        "create_week_slots: done provider=%s service=%s from=%s to=%s created=%s",
+        provider_id,
+        service_id,
+        start_date,
+        end_date,
+        len(created),
+    )
+
+    return created

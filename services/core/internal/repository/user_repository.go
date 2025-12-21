@@ -13,6 +13,9 @@ import (
 type UserRepository interface {
 	FindByTelegramID(ctx context.Context, telegramID int64) (*model.User, error)
 	FindByPhone(ctx context.Context, phone string) (*model.User, error)
+	FindByUsername(ctx context.Context, username string) (*model.User, error)
+	ClearRoles(ctx context.Context, userID uuid.UUID) error
+	ResetAccount(ctx context.Context, telegramID int64) (*model.User, error)
 	UpsertUser(ctx context.Context, telegramID int64, displayName, username, contactPhone string) (*model.User, error)
 	UpdateContacts(ctx context.Context, telegramID int64, displayName, username, contactPhone string) (*model.User, error)
 	SetRole(ctx context.Context, userID uuid.UUID, roleCode string) error
@@ -48,7 +51,14 @@ func normalizePhone(phone string) string {
 			b = append(b, c)
 		}
 	}
-	return string(b)
+	digits := string(b)
+	// RU-friendly: 8XXXXXXXXXX -> 7XXXXXXXXXX, 10 digits -> prefix 7
+	if len(digits) == 11 && strings.HasPrefix(digits, "8") {
+		digits = "7" + digits[1:]
+	} else if len(digits) == 10 {
+		digits = "7" + digits
+	}
+	return digits
 }
 
 func (r *GormUserRepository) FindByPhone(ctx context.Context, phone string) (*model.User, error) {
@@ -70,8 +80,51 @@ func (r *GormUserRepository) FindByPhone(ctx context.Context, phone string) (*mo
 	return &u, nil
 }
 
+func normalizeUsername(username string) string {
+	u := strings.TrimSpace(username)
+	u = strings.TrimPrefix(u, "@")
+	u = strings.ToLower(u)
+	return u
+}
+
+func (r *GormUserRepository) FindByUsername(ctx context.Context, username string) (*model.User, error) {
+	uq := normalizeUsername(username)
+	if uq == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var u model.User
+	// Username stored in Note (see mapUser). Make lookup case-insensitive.
+	if err := r.db.WithContext(ctx).Model(&model.User{}).Where("LOWER(note) = ?", uq).First(&u).Error; err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *GormUserRepository) ClearRoles(ctx context.Context, userID uuid.UUID) error {
+	if userID == uuid.Nil {
+		return gorm.ErrRecordNotFound
+	}
+	return r.db.WithContext(ctx).Where("user_id = ?", userID).Delete(&model.UserRole{}).Error
+}
+
+func (r *GormUserRepository) ResetAccount(ctx context.Context, telegramID int64) (*model.User, error) {
+	if telegramID <= 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	updates := map[string]any{
+		"display_name":  "",
+		"contact_phone": "",
+		"note":          "",
+	}
+	if err := r.db.WithContext(ctx).Model(&model.User{}).Where("telegram_id = ?", telegramID).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	return r.FindByTelegramID(ctx, telegramID)
+}
+
 func (r *GormUserRepository) UpsertUser(ctx context.Context, telegramID int64, displayName, username, contactPhone string) (*model.User, error) {
 	contactPhone = normalizePhone(contactPhone)
+	username = normalizeUsername(username)
 	var u model.User
 	tx := r.db.WithContext(ctx).Where("telegram_id = ?", telegramID).First(&u)
 	if tx.Error != nil {
@@ -112,7 +165,7 @@ func (r *GormUserRepository) UpdateContacts(ctx context.Context, telegramID int6
 		updates["contact_phone"] = normalizePhone(contactPhone)
 	}
 	if username != "" {
-		updates["note"] = username
+		updates["note"] = normalizeUsername(username)
 	}
 	if len(updates) == 0 {
 		// nothing to update; just return current user

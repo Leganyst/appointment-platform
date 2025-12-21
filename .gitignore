@@ -26,6 +26,7 @@ env/
 htmlcov/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .pyre/
 .pytype/
 .ipynb_checkpoints
@@ -50,3 +51,9 @@ htmlcov/
 
 # Go module / workspace
 go.work
+
+# ---- OS / editors ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
